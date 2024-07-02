@@ -90,6 +90,36 @@ impl TestContext {
         new
     }
 
+    /// Add extra standard filtering for messages like "Resolved 10 packages" which
+    /// can differ between platforms.
+    ///
+    /// In some cases, these counts are helpful for the snapshot and should not be filtered.
+    #[must_use]
+    pub fn with_filtered_counts(mut self) -> Self {
+        for verb in &[
+            "Resolved",
+            "Prepared",
+            "Installed",
+            "Uninstalled",
+            "Audited",
+        ] {
+            self.filters.push((
+                format!("{verb} \\d+ packages?"),
+                format!("{verb} [N] packages"),
+            ));
+        }
+        self
+    }
+
+    /// Add extra standard filtering for executable suffixes on the current platform e.g.
+    /// drops `.exe` on Windows.
+    #[must_use]
+    pub fn with_filtered_exe_suffix(mut self) -> Self {
+        self.filters
+            .push((std::env::consts::EXE_SUFFIX.to_string(), String::new()));
+        self
+    }
+
     /// Create a new test context with multiple Python versions.
     ///
     /// Does not create a virtual environment by default, but the first Python version
@@ -317,6 +347,14 @@ impl TestContext {
         command
     }
 
+    /// Create a `pip tree` command for testing.
+    pub fn pip_tree(&self) -> Command {
+        let mut command = Command::new(get_bin());
+        command.arg("pip").arg("tree");
+        self.add_shared_args(&mut command);
+        command
+    }
+
     /// Create a `uv sync` command with options shared across scenarios.
     pub fn sync(&self) -> Command {
         let mut command = Command::new(get_bin());
@@ -346,6 +384,14 @@ impl TestContext {
         command
     }
 
+    /// Create a `uv toolchain dir` command with options shared across scenarios.
+    pub fn toolchain_dir(&self) -> Command {
+        let mut command = Command::new(get_bin());
+        command.arg("toolchain").arg("dir");
+        self.add_shared_args(&mut command);
+        command
+    }
+
     /// Create a `uv run` command with options shared across scenarios.
     pub fn run(&self) -> Command {
         let mut command = Command::new(get_bin());
@@ -358,6 +404,50 @@ impl TestContext {
     pub fn tool_run(&self) -> Command {
         let mut command = Command::new(get_bin());
         command.arg("tool").arg("run");
+        self.add_shared_args(&mut command);
+        command
+    }
+
+    /// Create a `uv tool install` command with options shared across scenarios.
+    pub fn tool_install(&self) -> std::process::Command {
+        let mut command = self.tool_install_without_exclude_newer();
+        command.arg("--exclude-newer").arg(EXCLUDE_NEWER);
+        command
+    }
+
+    /// Create a `uv tool install` command with no `--exclude-newer` option.
+    ///
+    /// One should avoid using this in tests to the extent possible because
+    /// it can result in tests failing when the index state changes. Therefore,
+    /// if you use this, there should be some other kind of mitigation in place.
+    /// For example, pinning package versions.
+    pub fn tool_install_without_exclude_newer(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(get_bin());
+        command.arg("tool").arg("install");
+        self.add_shared_args(&mut command);
+        command
+    }
+
+    /// Create a `uv tool list` command with options shared across scenarios.
+    pub fn tool_list(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(get_bin());
+        command.arg("tool").arg("list");
+        self.add_shared_args(&mut command);
+        command
+    }
+
+    /// Create a `uv tool dir` command with options shared across scenarios.
+    pub fn tool_dir(&self) -> Command {
+        let mut command = Command::new(get_bin());
+        command.arg("tool").arg("dir");
+        self.add_shared_args(&mut command);
+        command
+    }
+
+    /// Create a `uv tool uninstall` command with options shared across scenarios.
+    pub fn tool_uninstall(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(get_bin());
+        command.arg("tool").arg("uninstall");
         self.add_shared_args(&mut command);
         command
     }
@@ -621,7 +711,7 @@ pub fn python_toolchains_for_versions(
             if let Ok(toolchain) = Toolchain::find(
                 &ToolchainRequest::parse(python_version),
                 EnvironmentPreference::OnlySystem,
-                ToolchainPreference::PreferInstalledManaged,
+                ToolchainPreference::Managed,
                 &cache,
             ) {
                 toolchain.into_interpreter().sys_executable().to_owned()

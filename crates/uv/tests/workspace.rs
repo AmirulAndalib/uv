@@ -167,6 +167,21 @@ fn test_albatross_project_in_excluded() {
     );
 
     context.assert_file(current_dir.join("check_installed_bird_feeder.py"));
+
+    let current_dir = workspaces_dir()
+        .join("albatross-project-in-excluded")
+        .join("packages")
+        .join("seeds");
+    uv_snapshot!(context.filters(), install_workspace(&context, &current_dir), @r###"
+    success: false
+    exit_code: 2
+    ----- stdout -----
+
+    ----- stderr -----
+    error: Failed to download and build: `seeds @ file://[WORKSPACE]/scripts/workspaces/albatross-project-in-excluded/packages/seeds`
+      Caused by: The project is marked as unmanaged: `[WORKSPACE]/scripts/workspaces/albatross-project-in-excluded/packages/seeds`
+    "###
+    );
 }
 
 #[test]
@@ -341,6 +356,7 @@ fn test_uv_run_with_package_virtual_workspace() -> Result<()> {
         "Using Python 3.12.[X] interpreter at: [PYTHON]",
     ));
 
+    // Run from the `bird-feeder` member.
     uv_snapshot!(filters, context
         .run()
         .arg("--preview")
@@ -370,10 +386,10 @@ fn test_uv_run_with_package_virtual_workspace() -> Result<()> {
     uv_snapshot!(context.filters(), universal_windows_filters=true, context
         .run()
         .arg("--preview")
-            .arg("--package")
-            .arg("albatross")
-            .arg("packages/albatross/check_installed_albatross.py")
-            .current_dir(&work_dir), @r###"
+        .arg("--package")
+        .arg("albatross")
+        .arg("packages/albatross/check_installed_albatross.py")
+        .current_dir(&work_dir), @r###"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -384,6 +400,47 @@ fn test_uv_run_with_package_virtual_workspace() -> Result<()> {
     Prepared 2 packages in [TIME]
     Installed 2 packages in [TIME]
      + albatross==0.1.0 (from file://[TEMP_DIR]/albatross-virtual-workspace/packages/albatross)
+     + tqdm==4.66.2
+    "###
+    );
+
+    Ok(())
+}
+
+/// Check that `uv run` works from a virtual workspace root, which should sync all packages in the
+/// workspace.
+#[test]
+fn test_uv_run_virtual_workspace_root() -> Result<()> {
+    let context = TestContext::new("3.12");
+    let work_dir = context.temp_dir.join("albatross-virtual-workspace");
+
+    copy_dir_ignore(
+        workspaces_dir().join("albatross-virtual-workspace"),
+        &work_dir,
+    )?;
+
+    uv_snapshot!(context.filters(), universal_windows_filters=true, context
+        .run()
+        .arg("--preview")
+        .arg("packages/albatross/check_installed_albatross.py")
+        .current_dir(&work_dir), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+    Success
+
+    ----- stderr -----
+    Using Python 3.12.[X] interpreter at: [PYTHON-3.12]
+    Creating virtualenv at: .venv
+    Resolved 8 packages in [TIME]
+    Prepared 7 packages in [TIME]
+    Installed 7 packages in [TIME]
+     + albatross==0.1.0 (from file://[TEMP_DIR]/albatross-virtual-workspace/packages/albatross)
+     + anyio==4.3.0
+     + bird-feeder==1.0.0 (from file://[TEMP_DIR]/albatross-virtual-workspace/packages/bird-feeder)
+     + idna==3.6
+     + seeds==1.0.0 (from file://[TEMP_DIR]/albatross-virtual-workspace/packages/seeds)
+     + sniffio==1.3.1
      + tqdm==4.66.2
     "###
     );

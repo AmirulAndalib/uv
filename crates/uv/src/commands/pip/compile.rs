@@ -1,6 +1,5 @@
 use std::env;
 use std::io::stdout;
-use std::ops::Deref;
 use std::path::Path;
 
 use anstream::{eprint, AutoStream, StripStream};
@@ -29,7 +28,8 @@ use uv_requirements::{
 };
 use uv_resolver::{
     AnnotationStyle, DependencyMode, DisplayResolutionGraph, ExcludeNewer, FlatIndex,
-    InMemoryIndex, OptionsBuilder, PreReleaseMode, PythonRequirement, ResolutionMode,
+    InMemoryIndex, OptionsBuilder, PreReleaseMode, PythonRequirement, RequiresPython,
+    ResolutionMode,
 };
 use uv_toolchain::{
     EnvironmentPreference, PythonEnvironment, PythonVersion, Toolchain, ToolchainPreference,
@@ -207,13 +207,22 @@ pub(crate) async fn pip_compile(
     // distributions will be built against the installed version, and so the index may contain
     // different package priorities than in the top-level resolution.
     let top_level_index = if python_version.is_some() {
-        InMemoryIndexRef::Owned(InMemoryIndex::default())
+        InMemoryIndex::default()
     } else {
-        InMemoryIndexRef::Borrowed(&source_index)
+        source_index.clone()
     };
 
     // Determine the Python requirement, if the user requested a specific version.
-    let python_requirement = if let Some(python_version) = python_version.as_ref() {
+    let python_requirement = if universal {
+        let requires_python = RequiresPython::greater_than_equal_version(
+            if let Some(python_version) = python_version.as_ref() {
+                python_version.version.clone()
+            } else {
+                interpreter.python_version().clone()
+            },
+        );
+        PythonRequirement::from_requires_python(&interpreter, &requires_python)
+    } else if let Some(python_version) = python_version.as_ref() {
         PythonRequirement::from_python_version(&interpreter, python_version)
     } else {
         PythonRequirement::from_interpreter(&interpreter)
@@ -595,22 +604,5 @@ impl OutputWriter {
         }
 
         Ok(())
-    }
-}
-
-/// An owned or unowned [`InMemoryIndex`].
-enum InMemoryIndexRef<'a> {
-    Owned(InMemoryIndex),
-    Borrowed(&'a InMemoryIndex),
-}
-
-impl Deref for InMemoryIndexRef<'_> {
-    type Target = InMemoryIndex;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Owned(index) => index,
-            Self::Borrowed(index) => index,
-        }
     }
 }

@@ -13,7 +13,7 @@ use uv_configuration::{
 };
 use uv_normalize::{ExtraName, PackageName};
 use uv_resolver::{AnnotationStyle, ExcludeNewer, PreReleaseMode, ResolutionMode};
-use uv_toolchain::{PythonVersion, ToolchainPreference};
+use uv_toolchain::{PythonVersion, ToolchainFetch, ToolchainPreference};
 
 pub mod compat;
 pub mod options;
@@ -118,9 +118,13 @@ pub struct GlobalArgs {
     #[arg(global = true, long, overrides_with("offline"), hide = true)]
     pub no_offline: bool,
 
-    /// Whether to use system or uv-managed Python toolchains.
+    /// Whether to prefer Python toolchains from uv or on the system.
     #[arg(global = true, long)]
     pub toolchain_preference: Option<ToolchainPreference>,
+
+    /// Whether to automatically download Python toolchains when required.
+    #[arg(global = true, long)]
+    pub toolchain_fetch: Option<ToolchainFetch>,
 
     /// Whether to enable experimental, preview features.
     #[arg(global = true, long, hide = true, env = "UV_PREVIEW", value_parser = clap::builder::BoolishValueParser::new(), overrides_with("no_preview"))]
@@ -569,9 +573,17 @@ pub struct PipCompileArgs {
     pub python_platform: Option<TargetTriple>,
 
     /// Perform a universal resolution, attempting to generate a single `requirements.txt` output
-    /// file that is compatible with all operating systems, architectures and supported Python
-    /// versions.
-    #[arg(long, overrides_with("no_universal"))]
+    /// file that is compatible with all operating systems, architectures, and Python
+    /// implementations.
+    ///
+    /// In universal mode, the current Python version (or user-provided `--python-version`) will be
+    /// treated as a lower bound. For example, `--universal --python-version 3.7` would produce a
+    /// universal resolution for Python 3.7 and later.
+    #[arg(
+        long,
+        overrides_with("no_universal"),
+        conflicts_with("python_platform")
+    )]
     pub universal: bool,
 
     #[arg(long, overrides_with("universal"), hide = true)]
@@ -1197,6 +1209,9 @@ pub struct PipUninstallArgs {
     /// Uninstall packages from the specified `--prefix` directory.
     #[arg(long, conflicts_with = "target")]
     pub prefix: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub compat_args: compat::PipGlobalCompatArgs,
 }
 
 #[derive(Args)]
@@ -1247,6 +1262,9 @@ pub struct PipFreezeArgs {
 
     #[arg(long, overrides_with("system"), hide = true)]
     pub no_system: bool,
+
+    #[command(flatten)]
+    pub compat_args: compat::PipGlobalCompatArgs,
 }
 
 #[derive(Args)]
@@ -1399,11 +1417,26 @@ pub struct PipShowArgs {
 
     #[arg(long, overrides_with("system"), hide = true)]
     pub no_system: bool,
+
+    #[command(flatten)]
+    pub compat_args: compat::PipGlobalCompatArgs,
 }
 
 #[derive(Args)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct PipTreeArgs {
+    /// Maximum display depth of the dependency tree
+    #[arg(long, short, default_value_t = 255)]
+    pub depth: u8,
+
+    /// Prune the given package from the display of the dependency tree.
+    #[arg(long)]
+    pub prune: Vec<PackageName>,
+
+    /// Display only the specified packages.
+    #[arg(long)]
+    pub package: Vec<PackageName>,
+
     /// Do not de-duplicate repeated dependencies.
     /// Usually, when a package has already displayed its dependencies,
     /// further occurrences will not re-display its dependencies,
@@ -1411,6 +1444,10 @@ pub struct PipTreeArgs {
     /// This flag will cause those duplicates to be repeated.
     #[arg(long)]
     pub no_dedupe: bool,
+
+    #[arg(long, alias = "reverse")]
+    /// Show the reverse dependencies for the given package. This flag will invert the tree and display the packages that depend on the given package.
+    pub invert: bool,
 
     /// Validate the virtual environment, to detect packages with missing dependencies or other
     /// issues.
@@ -1453,6 +1490,9 @@ pub struct PipTreeArgs {
 
     #[arg(long, overrides_with("system"))]
     pub no_system: bool,
+
+    #[command(flatten)]
+    pub compat_args: compat::PipGlobalCompatArgs,
 }
 
 #[derive(Args)]
@@ -1490,7 +1530,9 @@ pub struct VenvArgs {
     #[arg(long, overrides_with("system"), hide = true)]
     pub no_system: bool,
 
-    /// Install seed packages (`pip`, `setuptools`, and `wheel`) into the virtual environment.
+    /// Install seed packages (one or more of: `pip`, `setuptools`, and `wheel`) into the virtual environment.
+    ///
+    /// Note `setuptools` and `wheel` are not included in Python 3.12+ environments.
     #[arg(long)]
     pub seed: bool,
 
@@ -1538,7 +1580,7 @@ pub struct VenvArgs {
     /// The strategy to use when resolving against multiple index URLs.
     ///
     /// By default, `uv` will stop at the first index on which a given package is available, and
-    /// limit resolutions to those present on that first index (`first-match`. This prevents
+    /// limit resolutions to those present on that first index (`first-match`). This prevents
     /// "dependency confusion" attacks, whereby an attack can upload a malicious package under the
     /// same name to a secondary
     #[arg(long, value_enum, env = "UV_INDEX_STRATEGY")]
@@ -1639,6 +1681,10 @@ pub struct RunArgs {
     #[command(flatten)]
     pub refresh: RefreshArgs,
 
+    /// Run the command in a specific package in the workspace.
+    #[arg(long, conflicts_with = "isolated")]
+    pub package: Option<PackageName>,
+
     /// The Python interpreter to use to build the run environment.
     ///
     /// By default, `uv` uses the virtual environment in the current working directory or any parent
@@ -1652,10 +1698,6 @@ pub struct RunArgs {
     /// - `/home/ferris/.local/bin/python3.10` uses the exact Python at the given path.
     #[arg(long, short, env = "UV_PYTHON", verbatim_doc_comment)]
     pub python: Option<String>,
-
-    /// Run the command in a different package in the workspace.
-    #[arg(long, conflicts_with = "isolated")]
-    pub package: Option<PackageName>,
 }
 
 #[derive(Args)]
@@ -1746,12 +1788,12 @@ pub struct AddArgs {
     pub requirements: Vec<String>,
 
     /// Add the requirements as development dependencies.
-    #[arg(long)]
+    #[arg(long, conflicts_with("optional"))]
     pub dev: bool,
 
-    /// Add the requirements as workspace dependencies.
-    #[arg(long)]
-    pub workspace: bool,
+    /// Add the requirements to the specified optional dependency group.
+    #[arg(long, conflicts_with("dev"))]
+    pub optional: Option<ExtraName>,
 
     /// Add the requirements as editables.
     #[arg(long, default_missing_value = "true", num_args(0..=1))]
@@ -1761,7 +1803,7 @@ pub struct AddArgs {
     ///
     /// Without this flag uv will try to use `tool.uv.sources` for any sources.
     #[arg(long)]
-    pub raw: bool,
+    pub raw_sources: bool,
 
     /// Specific commit to use when adding from Git.
     #[arg(long)]
@@ -1775,6 +1817,10 @@ pub struct AddArgs {
     #[arg(long)]
     pub branch: Option<String>,
 
+    /// Extras to activate for the dependency; may be provided more than once.
+    #[arg(long)]
+    pub extra: Option<Vec<ExtraName>>,
+
     #[command(flatten)]
     pub installer: ResolverInstallerArgs,
 
@@ -1783,6 +1829,10 @@ pub struct AddArgs {
 
     #[command(flatten)]
     pub refresh: RefreshArgs,
+
+    /// Add the dependency to a specific package in the workspace.
+    #[arg(long, conflicts_with = "isolated")]
+    pub package: Option<PackageName>,
 
     /// The Python interpreter into which packages should be installed.
     ///
@@ -1808,8 +1858,16 @@ pub struct RemoveArgs {
     pub requirements: Vec<PackageName>,
 
     /// Remove the requirements from development dependencies.
-    #[arg(long)]
+    #[arg(long, conflicts_with("optional"))]
     pub dev: bool,
+
+    /// Remove the requirements from the specified optional dependency group.
+    #[arg(long, conflicts_with("dev"))]
+    pub optional: Option<ExtraName>,
+
+    /// Remove the dependency from a specific package in the workspace.
+    #[arg(long, conflicts_with = "isolated")]
+    pub package: Option<PackageName>,
 
     /// The Python interpreter into which packages should be installed.
     ///
@@ -1838,12 +1896,27 @@ pub struct ToolNamespace {
 pub enum ToolCommand {
     /// Run a tool
     Run(ToolRunArgs),
+    /// Install a tool
+    Install(ToolInstallArgs),
+    /// List installed tools.
+    List(ToolListArgs),
+    /// Uninstall a tool.
+    Uninstall(ToolUninstallArgs),
+    /// Show the tools directory.
+    Dir,
 }
 
 #[derive(Args)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ToolRunArgs {
     /// The command to run.
+    ///
+    /// By default, the package to install is assumed to match the command name.
+    ///
+    /// The name of the command can include an exact version in the format `<package>@<version>`.
+    ///
+    /// If more complex version specification is desired or if the command is provided by a different
+    /// package, use `--from`.
     #[command(subcommand)]
     pub command: ExternalCommand,
 
@@ -1883,6 +1956,62 @@ pub struct ToolRunArgs {
 
 #[derive(Args)]
 #[allow(clippy::struct_excessive_bools)]
+pub struct ToolInstallArgs {
+    /// The package to install commands from.
+    pub package: String,
+
+    /// The package to install commands from.
+    ///
+    /// This option is provided for parity with `uv tool run`, but is redundant with `package`.
+    #[arg(long, hide = true)]
+    pub from: Option<String>,
+
+    /// Include the following extra requirements.
+    #[arg(long)]
+    pub with: Vec<String>,
+
+    #[command(flatten)]
+    pub installer: ResolverInstallerArgs,
+
+    #[command(flatten)]
+    pub build: BuildArgs,
+
+    #[command(flatten)]
+    pub refresh: RefreshArgs,
+
+    /// Force installation of the tool.
+    ///
+    /// Will replace any existing entry points with the same name in the executable directory.
+    #[arg(long)]
+    pub force: bool,
+
+    /// The Python interpreter to use to build the tool environment.
+    ///
+    /// By default, uv will search for a Python executable in the `PATH`. uv ignores virtual
+    /// environments while looking for interpreter for tools. The `--python` option allows
+    /// you to specify a different interpreter.
+    ///
+    /// Supported formats:
+    /// - `3.10` looks for an installed Python 3.10 using `py --list-paths` on Windows, or
+    ///   `python3.10` on Linux and macOS.
+    /// - `python3.10` or `python.exe` looks for a binary with the given name in `PATH`.
+    /// - `/home/ferris/.local/bin/python3.10` uses the exact Python at the given path.
+    #[arg(long, short, env = "UV_PYTHON", verbatim_doc_comment)]
+    pub python: Option<String>,
+}
+
+#[derive(Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ToolListArgs;
+
+#[derive(Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ToolUninstallArgs {
+    pub name: String,
+}
+
+#[derive(Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ToolchainNamespace {
     #[command(subcommand)]
     pub command: ToolchainCommand,
@@ -1893,12 +2022,18 @@ pub enum ToolchainCommand {
     /// List the available toolchains.
     List(ToolchainListArgs),
 
-    /// Download and install a specific toolchain.
+    /// Download and install toolchains.
     Install(ToolchainInstallArgs),
 
-    /// Search for a toolchain
+    /// Search for a toolchain.
     #[command(disable_version_flag = true)]
     Find(ToolchainFindArgs),
+
+    /// Show the toolchains directory.
+    Dir,
+
+    /// Uninstall toolchains.
+    Uninstall(ToolchainUninstallArgs),
 }
 
 #[derive(Args)]
@@ -1930,6 +2065,13 @@ pub struct ToolchainInstallArgs {
     /// Force the installation of the toolchain, even if it is already installed.
     #[arg(long, short)]
     pub force: bool,
+}
+
+#[derive(Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ToolchainUninstallArgs {
+    /// The toolchains to uninstall.
+    pub targets: Vec<String>,
 }
 
 #[derive(Args)]

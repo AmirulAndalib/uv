@@ -526,17 +526,8 @@ fn respect_installed_and_reinstall() -> Result<()> {
     let requirements_txt = context.temp_dir.child("requirements.txt");
     requirements_txt.write_str("Flask==2.3.3")?;
 
-    let filters = if cfg!(windows) {
-        // Remove the colorama count on windows
-        context
-            .filters()
-            .into_iter()
-            .chain([("Resolved 8 packages", "Resolved 7 packages")])
-            .collect()
-    } else {
-        context.filters()
-    };
-    uv_snapshot!(filters, context.pip_install()
+    let context = context.with_filtered_counts();
+    uv_snapshot!(context.filters(), context.pip_install()
         .arg("-r")
         .arg("requirements.txt")
         .arg("--strict"), @r###"
@@ -545,10 +536,10 @@ fn respect_installed_and_reinstall() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    Resolved 7 packages in [TIME]
-    Prepared 1 package in [TIME]
-    Uninstalled 1 package in [TIME]
-    Installed 1 package in [TIME]
+    Resolved [N] packages in [TIME]
+    Prepared [N] packages in [TIME]
+    Uninstalled [N] packages in [TIME]
+    Installed [N] packages in [TIME]
      - flask==2.3.2
      + flask==2.3.3
     "###
@@ -558,7 +549,7 @@ fn respect_installed_and_reinstall() -> Result<()> {
     let requirements_txt = context.temp_dir.child("requirements.txt");
     requirements_txt.write_str("Flask")?;
 
-    uv_snapshot!(filters, context.pip_install()
+    uv_snapshot!(context.filters(), context.pip_install()
         .arg("-r")
         .arg("requirements.txt")
         .arg("--reinstall-package")
@@ -569,10 +560,10 @@ fn respect_installed_and_reinstall() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    Resolved 7 packages in [TIME]
-    Prepared 1 package in [TIME]
-    Uninstalled 1 package in [TIME]
-    Installed 1 package in [TIME]
+    Resolved [N] packages in [TIME]
+    Prepared [N] packages in [TIME]
+    Uninstalled [N] packages in [TIME]
+    Installed [N] packages in [TIME]
      - flask==2.3.3
      + flask==3.0.2
     "###
@@ -582,7 +573,7 @@ fn respect_installed_and_reinstall() -> Result<()> {
     let requirements_txt = context.temp_dir.child("requirements.txt");
     requirements_txt.write_str("Flask")?;
 
-    uv_snapshot!(filters, context.pip_install()
+    uv_snapshot!(context.filters(), context.pip_install()
         .arg("-r")
         .arg("requirements.txt")
         .arg("--reinstall-package")
@@ -593,9 +584,9 @@ fn respect_installed_and_reinstall() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    Resolved 7 packages in [TIME]
-    Uninstalled 1 package in [TIME]
-    Installed 1 package in [TIME]
+    Resolved [N] packages in [TIME]
+    Uninstalled [N] packages in [TIME]
+    Installed [N] packages in [TIME]
      - flask==3.0.2
      + flask==3.0.2
     "###
@@ -895,27 +886,19 @@ fn install_editable_and_registry() {
     "###
     );
 
-    let filters: Vec<_> = context
-        .filters()
-        .into_iter()
-        .chain([
-            // Remove colorama
-            ("Resolved 7 packages", "Resolved 6 packages"),
-        ])
-        .collect();
-
+    let context = context.with_filtered_counts();
     // Re-install Black at a specific version. This should replace the editable version.
-    uv_snapshot!(filters, context.pip_install()
+    uv_snapshot!(context.filters(), context.pip_install()
         .arg("black==23.10.0"), @r###"
     success: true
     exit_code: 0
     ----- stdout -----
 
     ----- stderr -----
-    Resolved 6 packages in [TIME]
-    Prepared 1 package in [TIME]
-    Uninstalled 1 package in [TIME]
-    Installed 1 package in [TIME]
+    Resolved [N] packages in [TIME]
+    Prepared [N] packages in [TIME]
+    Uninstalled [N] packages in [TIME]
+    Installed [N] packages in [TIME]
      - black==0.1.0 (from file://[WORKSPACE]/scripts/packages/black_editable)
      + black==23.10.0
     "###
@@ -1371,6 +1354,53 @@ fn install_git_public_https() {
     context.assert_installed("uv_public_pypackage", "0.1.0");
 }
 
+/// Install and update a package from a public GitHub repository
+#[test]
+#[cfg(feature = "git")]
+fn update_ref_git_public_https() {
+    let context = TestContext::new("3.8");
+
+    uv_snapshot!(
+        context
+        .pip_install()
+        .arg("uv-public-pypackage @ git+https://github.com/astral-test/uv-public-pypackage@0dacfd662c64cb4ceb16e6cf65a157a8b715b979"),
+        @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 1 package in [TIME]
+    Prepared 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + uv-public-pypackage==0.1.0 (from git+https://github.com/astral-test/uv-public-pypackage@0dacfd662c64cb4ceb16e6cf65a157a8b715b979)
+    "###);
+
+    context.assert_installed("uv_public_pypackage", "0.1.0");
+
+    // Update to a newer commit.
+    uv_snapshot!(
+        context
+        .pip_install()
+        .arg("uv-public-pypackage @ git+https://github.com/astral-test/uv-public-pypackage@b270df1a2fb5d012294e9aaf05e7e0bab1e6a389")
+        .arg("--refresh"),
+        @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 1 package in [TIME]
+    Prepared 1 package in [TIME]
+    Uninstalled 1 package in [TIME]
+    Installed 1 package in [TIME]
+     - uv-public-pypackage==0.1.0 (from git+https://github.com/astral-test/uv-public-pypackage@0dacfd662c64cb4ceb16e6cf65a157a8b715b979)
+     + uv-public-pypackage==0.1.0 (from git+https://github.com/astral-test/uv-public-pypackage@b270df1a2fb5d012294e9aaf05e7e0bab1e6a389)
+    "###);
+
+    context.assert_installed("uv_public_pypackage", "0.1.0");
+}
+
 /// Install a package from a public GitHub repository at a ref that does not exist
 #[test]
 #[cfg(feature = "git")]
@@ -1770,17 +1800,7 @@ fn reinstall_no_binary() {
     context.assert_command("import anyio").success();
 
     // With `--reinstall`, `--no-binary` should have an affect
-    let filters = if cfg!(windows) {
-        // Remove the colorama count on windows
-        context
-            .filters()
-            .into_iter()
-            .chain([("Resolved 8 packages", "Resolved 7 packages")])
-            .collect()
-    } else {
-        context.filters()
-    };
-
+    let context = context.with_filtered_counts();
     let mut command = context.pip_install();
     command
         .arg("anyio")
@@ -1789,15 +1809,15 @@ fn reinstall_no_binary() {
         .arg("--reinstall-package")
         .arg("anyio")
         .arg("--strict");
-    uv_snapshot!(filters, command, @r###"
+    uv_snapshot!(context.filters(), command, @r###"
     success: true
     exit_code: 0
     ----- stdout -----
 
     ----- stderr -----
-    Resolved 3 packages in [TIME]
-    Uninstalled 1 package in [TIME]
-    Installed 1 package in [TIME]
+    Resolved [N] packages in [TIME]
+    Uninstalled [N] packages in [TIME]
+    Installed [N] packages in [TIME]
      - anyio==4.3.0
      + anyio==4.3.0
     "###
@@ -5485,26 +5505,27 @@ fn tool_uv_sources_is_in_preview() -> Result<()> {
         name = "foo"
         version = "0.0.0"
         dependencies = [
-          "tqdm>4,<=5",
+          "iniconfig>1,<=2",
         ]
 
         [tool.uv.sources]
-        tqdm = { url = "https://files.pythonhosted.org/packages/a5/d6/502a859bac4ad5e274255576cd3e15ca273cdb91731bc39fb840dd422ee9/tqdm-4.66.0-py3-none-any.whl" }
+        iniconfig = { url = "https://files.pythonhosted.org/packages/ef/a6/62565a6e1cf69e10f5727360368e451d4b7f58beeac6173dc9db836a5b46/iniconfig-2.0.0-py3-none-any.whl" }
     "#})?;
 
     // Install the editable packages.
-    uv_snapshot!(context.filters(), windows_filters=false, context.pip_install()
+    uv_snapshot!(context.filters(), context.pip_install()
         .arg("-r")
-        .arg("pyproject.toml")
-        .arg("--extra")
-        .arg("utils"), @r###"
-    success: false
-    exit_code: 2
+        .arg("pyproject.toml"), @r###"
+    success: true
+    exit_code: 0
     ----- stdout -----
 
     ----- stderr -----
-    error: Failed to parse entry for: `tqdm`
-      Caused by: `tool.uv.sources` is a preview feature; use `--preview` or set `UV_PREVIEW=1` to enable it
+    warning: `uv.sources` is experimental and may change without warning.
+    Resolved 1 package in [TIME]
+    Prepared 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + iniconfig==2.0.0 (from https://files.pythonhosted.org/packages/ef/a6/62565a6e1cf69e10f5727360368e451d4b7f58beeac6173dc9db836a5b46/iniconfig-2.0.0-py3-none-any.whl)
     "###
     );
 
@@ -5625,7 +5646,7 @@ fn local_index_absolute() -> Result<()> {
             <meta name="pypi:repository-version" content="1.1" />
           </head>
           <body>
-            <h1>Links for example-a-961b4c22</h1>
+            <h1>Links for tqdm</h1>
             <a
               href="{}/tqdm-1000.0.0-py3-none-any.whl"
               data-requires-python=">=3.8"
@@ -5676,7 +5697,7 @@ fn local_index_relative() -> Result<()> {
             <meta name="pypi:repository-version" content="1.1" />
           </head>
           <body>
-            <h1>Links for example-a-961b4c22</h1>
+            <h1>Links for tqdm</h1>
             <a
               href="{}/tqdm-1000.0.0-py3-none-any.whl"
               data-requires-python=">=3.8"
@@ -5727,7 +5748,7 @@ fn local_index_requirements_txt_absolute() -> Result<()> {
             <meta name="pypi:repository-version" content="1.1" />
           </head>
           <body>
-            <h1>Links for example-a-961b4c22</h1>
+            <h1>Links for tqdm</h1>
             <a
               href="{}/tqdm-1000.0.0-py3-none-any.whl"
               data-requires-python=">=3.8"
@@ -5783,7 +5804,7 @@ fn local_index_requirements_txt_relative() -> Result<()> {
             <meta name="pypi:repository-version" content="1.1" />
           </head>
           <body>
-            <h1>Links for example-a-961b4c22</h1>
+            <h1>Links for tqdm</h1>
             <a
               href="{}/tqdm-1000.0.0-py3-none-any.whl"
               data-requires-python=">=3.8"
@@ -5815,6 +5836,52 @@ fn local_index_requirements_txt_relative() -> Result<()> {
     Prepared 1 package in [TIME]
     Installed 1 package in [TIME]
      + tqdm==1000.0.0
+    "###
+    );
+
+    Ok(())
+}
+
+/// Resolve against a local directory laid out as a PEP 503-compatible index, falling back to
+/// the default index.
+#[test]
+fn local_index_fallback() -> Result<()> {
+    let context = TestContext::new("3.12");
+
+    let root = context.temp_dir.child("simple-html");
+    fs_err::create_dir_all(&root)?;
+
+    let tqdm = root.child("tqdm");
+    fs_err::create_dir_all(&tqdm)?;
+
+    let index = tqdm.child("index.html");
+    index.write_str(
+        r#"
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta name="pypi:repository-version" content="1.1" />
+          </head>
+          <body>
+            <h1>Links for tqdm</h1>
+          </body>
+        </html>
+    "#,
+    )?;
+
+    uv_snapshot!(context.filters(), context.pip_install()
+        .arg("iniconfig")
+        .arg("--extra-index-url")
+        .arg(Url::from_directory_path(root).unwrap().as_str()), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 1 package in [TIME]
+    Prepared 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + iniconfig==2.0.0
     "###
     );
 
