@@ -1,7 +1,3 @@
-use itertools::Itertools;
-use petgraph::graph::NodeIndex;
-use petgraph::visit::EdgeRef;
-use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
@@ -10,21 +6,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
+
+use itertools::Itertools;
+use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+use rustc_hash::{FxHashMap, FxHashSet};
 use toml_edit::{value, Array, ArrayOfTables, InlineTable, Item, Table, Value};
 use url::Url;
 
-use crate::fork_strategy::ForkStrategy;
-pub use crate::lock::map::PackageMap;
-pub use crate::lock::requirements_txt::RequirementsTxtExport;
-pub use crate::lock::target::InstallTarget;
-pub use crate::lock::tree::TreeDisplay;
-use crate::requires_python::SimplifiedMarkerTree;
-use crate::resolution::{AnnotatedDist, ResolutionGraphNode};
-use crate::universal_marker::{ConflictMarker, UniversalMarker};
-use crate::{
-    ExcludeNewer, InMemoryIndex, MetadataResponse, PrereleaseMode, RequiresPython, ResolutionMode,
-    ResolverOutput,
-};
 use uv_cache_key::RepositoryUrl;
 use uv_configuration::BuildOptions;
 use uv_distribution::DistributionDatabase;
@@ -48,12 +37,24 @@ use uv_pypi_types::{
     Requirement, RequirementSource,
 };
 use uv_types::{BuildContext, HashStrategy};
-use uv_workspace::dependency_groups::DependencyGroupError;
-use uv_workspace::Workspace;
+use uv_workspace::WorkspaceMember;
 
+use crate::fork_strategy::ForkStrategy;
+pub use crate::lock::installable::Installable;
+pub use crate::lock::map::PackageMap;
+pub use crate::lock::requirements_txt::RequirementsTxtExport;
+pub use crate::lock::tree::TreeDisplay;
+use crate::requires_python::SimplifiedMarkerTree;
+use crate::resolution::{AnnotatedDist, ResolutionGraphNode};
+use crate::universal_marker::{ConflictMarker, UniversalMarker};
+use crate::{
+    ExcludeNewer, InMemoryIndex, MetadataResponse, PrereleaseMode, RequiresPython, ResolutionMode,
+    ResolverOutput,
+};
+
+mod installable;
 mod map;
 mod requirements_txt;
-mod target;
 mod tree;
 
 /// The current version of the lockfile format.
@@ -566,6 +567,16 @@ impl Lock {
         &self.manifest.members
     }
 
+    /// Returns the dependency groups that were used to generate this lock.
+    pub fn requirements(&self) -> &BTreeSet<Requirement> {
+        &self.manifest.requirements
+    }
+
+    /// Returns the dependency groups that were used to generate this lock.
+    pub fn dependency_groups(&self) -> &BTreeMap<GroupName, BTreeSet<Requirement>> {
+        &self.manifest.dependency_groups
+    }
+
     /// Return the workspace root used to generate this lock.
     pub fn root(&self) -> Option<&Package> {
         self.packages.iter().find(|package| {
@@ -630,7 +641,7 @@ impl Lock {
                     .iter()
                     .copied()
                     .map(|marker| SimplifiedMarkerTree::new(&self.requires_python, marker))
-                    .filter_map(super::requires_python::SimplifiedMarkerTree::try_to_string),
+                    .filter_map(SimplifiedMarkerTree::try_to_string),
             );
             doc.insert("supported-markers", value(supported_environments));
         }
@@ -764,6 +775,32 @@ impl Lock {
                 manifest_table.insert("overrides", value(overrides));
             }
 
+            if !self.manifest.dependency_groups.is_empty() {
+                let mut dependency_groups = Table::new();
+                for (extra, requirements) in &self.manifest.dependency_groups {
+                    let requirements = requirements
+                        .iter()
+                        .map(|requirement| {
+                            serde::Serialize::serialize(
+                                &requirement,
+                                toml_edit::ser::ValueSerializer::new(),
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let requirements = match requirements.as_slice() {
+                        [] => Array::new(),
+                        [requirement] => Array::from_iter([requirement]),
+                        requirements => each_element_on_its_line_array(requirements.iter()),
+                    };
+                    if !requirements.is_empty() {
+                        dependency_groups.insert(extra.as_ref(), value(requirements));
+                    }
+                }
+                if !dependency_groups.is_empty() {
+                    manifest_table.insert("dependency-groups", Item::Table(dependency_groups));
+                }
+            }
+
             if !self.manifest.dependency_metadata.is_empty() {
                 let mut tables = ArrayOfTables::new();
                 for metadata in &self.manifest.dependency_metadata {
@@ -879,11 +916,13 @@ impl Lock {
     /// Convert the [`Lock`] to a [`Resolution`] using the given marker environment, tags, and root.
     pub async fn satisfies<Context: BuildContext>(
         &self,
-        workspace: &Workspace,
+        root: &Path,
+        packages: &BTreeMap<PackageName, WorkspaceMember>,
         members: &[PackageName],
         requirements: &[Requirement],
         constraints: &[Requirement],
         overrides: &[Requirement],
+        dependency_groups: &BTreeMap<GroupName, Vec<Requirement>>,
         dependency_metadata: &DependencyMetadata,
         indexes: Option<&IndexLocations>,
         tags: &Tags,
@@ -906,7 +945,7 @@ impl Lock {
         // Validate that the member sources have not changed.
         {
             // E.g., that they've switched from virtual to non-virtual or vice versa.
-            for (name, member) in workspace.packages() {
+            for (name, member) in packages {
                 let expected = !member.pyproject_toml().is_package();
                 let actual = self
                     .find_by_name(name)
@@ -919,7 +958,7 @@ impl Lock {
             }
 
             // E.g., that the version has changed.
-            for (name, member) in workspace.packages() {
+            for (name, member) in packages {
                 let Some(expected) = member
                     .pyproject_toml()
                     .project
@@ -948,14 +987,14 @@ impl Lock {
             let expected: BTreeSet<_> = requirements
                 .iter()
                 .cloned()
-                .map(|requirement| normalize_requirement(requirement, workspace))
+                .map(|requirement| normalize_requirement(requirement, root))
                 .collect::<Result<_, _>>()?;
             let actual: BTreeSet<_> = self
                 .manifest
                 .requirements
                 .iter()
                 .cloned()
-                .map(|requirement| normalize_requirement(requirement, workspace))
+                .map(|requirement| normalize_requirement(requirement, root))
                 .collect::<Result<_, _>>()?;
             if expected != actual {
                 return Ok(SatisfiesResult::MismatchedConstraints(expected, actual));
@@ -967,14 +1006,14 @@ impl Lock {
             let expected: BTreeSet<_> = constraints
                 .iter()
                 .cloned()
-                .map(|requirement| normalize_requirement(requirement, workspace))
+                .map(|requirement| normalize_requirement(requirement, root))
                 .collect::<Result<_, _>>()?;
             let actual: BTreeSet<_> = self
                 .manifest
                 .constraints
                 .iter()
                 .cloned()
-                .map(|requirement| normalize_requirement(requirement, workspace))
+                .map(|requirement| normalize_requirement(requirement, root))
                 .collect::<Result<_, _>>()?;
             if expected != actual {
                 return Ok(SatisfiesResult::MismatchedConstraints(expected, actual));
@@ -986,17 +1025,56 @@ impl Lock {
             let expected: BTreeSet<_> = overrides
                 .iter()
                 .cloned()
-                .map(|requirement| normalize_requirement(requirement, workspace))
+                .map(|requirement| normalize_requirement(requirement, root))
                 .collect::<Result<_, _>>()?;
             let actual: BTreeSet<_> = self
                 .manifest
                 .overrides
                 .iter()
                 .cloned()
-                .map(|requirement| normalize_requirement(requirement, workspace))
+                .map(|requirement| normalize_requirement(requirement, root))
                 .collect::<Result<_, _>>()?;
             if expected != actual {
                 return Ok(SatisfiesResult::MismatchedOverrides(expected, actual));
+            }
+        }
+
+        // Validate that the lockfile was generated with the dependency groups.
+        {
+            let expected: BTreeMap<GroupName, BTreeSet<Requirement>> = dependency_groups
+                .iter()
+                .filter(|(_, requirements)| !requirements.is_empty())
+                .map(|(group, requirements)| {
+                    Ok::<_, LockError>((
+                        group.clone(),
+                        requirements
+                            .iter()
+                            .cloned()
+                            .map(|requirement| normalize_requirement(requirement, root))
+                            .collect::<Result<_, _>>()?,
+                    ))
+                })
+                .collect::<Result<_, _>>()?;
+            let actual: BTreeMap<GroupName, BTreeSet<Requirement>> = self
+                .manifest
+                .dependency_groups
+                .iter()
+                .filter(|(_, requirements)| !requirements.is_empty())
+                .map(|(group, requirements)| {
+                    Ok::<_, LockError>((
+                        group.clone(),
+                        requirements
+                            .iter()
+                            .cloned()
+                            .map(|requirement| normalize_requirement(requirement, root))
+                            .collect::<Result<_, _>>()?,
+                    ))
+                })
+                .collect::<Result<_, _>>()?;
+            if expected != actual {
+                return Ok(SatisfiesResult::MismatchedDependencyGroups(
+                    expected, actual,
+                ));
             }
         }
 
@@ -1034,7 +1112,7 @@ impl Lock {
                     IndexUrl::Pypi(_) | IndexUrl::Url(_) => None,
                     IndexUrl::Path(url) => {
                         let path = url.to_file_path().ok()?;
-                        let path = relative_to(&path, workspace.install_path())
+                        let path = relative_to(&path, root)
                             .or_else(|_| std::path::absolute(path))
                             .ok()?;
                         Some(path)
@@ -1044,7 +1122,7 @@ impl Lock {
         });
 
         // Add the workspace packages to the queue.
-        for root_name in workspace.packages().keys() {
+        for root_name in packages.keys() {
             let root = self
                 .find_by_name(root_name)
                 .expect("found too many packages matching root");
@@ -1093,7 +1171,7 @@ impl Lock {
 
             // Get the metadata for the distribution.
             let dist = package.to_dist(
-                workspace.install_path(),
+                root,
                 // When validating, it's okay to use wheels that don't match the current platform.
                 TagPolicy::Preferred(tags),
                 // When validating, it's okay to use (e.g.) a source distribution with `--no-build`.
@@ -1156,18 +1234,18 @@ impl Lock {
                 let expected: BTreeSet<_> = metadata
                     .requires_dist
                     .into_iter()
-                    .map(|requirement| normalize_requirement(requirement, workspace))
+                    .map(|requirement| normalize_requirement(requirement, root))
                     .collect::<Result<_, _>>()?;
                 let actual: BTreeSet<_> = package
                     .metadata
                     .requires_dist
                     .iter()
                     .cloned()
-                    .map(|requirement| normalize_requirement(requirement, workspace))
+                    .map(|requirement| normalize_requirement(requirement, root))
                     .collect::<Result<_, _>>()?;
 
                 if expected != actual {
-                    return Ok(SatisfiesResult::MismatchedRequiresDist(
+                    return Ok(SatisfiesResult::MismatchedPackageRequirements(
                         &package.id.name,
                         &package.id.version,
                         expected,
@@ -1187,7 +1265,7 @@ impl Lock {
                             group,
                             requirements
                                 .into_iter()
-                                .map(|requirement| normalize_requirement(requirement, workspace))
+                                .map(|requirement| normalize_requirement(requirement, root))
                                 .collect::<Result<_, _>>()?,
                         ))
                     })
@@ -1203,14 +1281,14 @@ impl Lock {
                             requirements
                                 .iter()
                                 .cloned()
-                                .map(|requirement| normalize_requirement(requirement, workspace))
+                                .map(|requirement| normalize_requirement(requirement, root))
                                 .collect::<Result<_, _>>()?,
                         ))
                     })
                     .collect::<Result<_, _>>()?;
 
                 if expected != actual {
-                    return Ok(SatisfiesResult::MismatchedDependencyGroups(
+                    return Ok(SatisfiesResult::MismatchedPackageDependencyGroups(
                         &package.id.name,
                         &package.id.version,
                         expected,
@@ -1287,6 +1365,11 @@ pub enum SatisfiesResult<'lock> {
     MismatchedConstraints(BTreeSet<Requirement>, BTreeSet<Requirement>),
     /// The lockfile uses a different set of overrides.
     MismatchedOverrides(BTreeSet<Requirement>, BTreeSet<Requirement>),
+    /// The lockfile uses a different set of dependency groups.
+    MismatchedDependencyGroups(
+        BTreeMap<GroupName, BTreeSet<Requirement>>,
+        BTreeMap<GroupName, BTreeSet<Requirement>>,
+    ),
     /// The lockfile uses different static metadata.
     MismatchedStaticMetadata(BTreeSet<StaticMetadata>, &'lock BTreeSet<StaticMetadata>),
     /// The lockfile is missing a workspace member.
@@ -1296,14 +1379,14 @@ pub enum SatisfiesResult<'lock> {
     /// The lockfile referenced a local index that was not provided
     MissingLocalIndex(&'lock PackageName, &'lock Version, &'lock PathBuf),
     /// A package in the lockfile contains different `requires-dist` metadata than expected.
-    MismatchedRequiresDist(
+    MismatchedPackageRequirements(
         &'lock PackageName,
         &'lock Version,
         BTreeSet<Requirement>,
         BTreeSet<Requirement>,
     ),
     /// A package in the lockfile contains different `dependency-group` metadata than expected.
-    MismatchedDependencyGroups(
+    MismatchedPackageDependencyGroups(
         &'lock PackageName,
         &'lock Version,
         BTreeMap<GroupName, BTreeSet<Requirement>>,
@@ -1335,8 +1418,18 @@ pub struct ResolverManifest {
     #[serde(default)]
     members: BTreeSet<PackageName>,
     /// The requirements provided to the resolver, exclusive of the workspace members.
+    ///
+    /// These are requirements that are attached to the project, but not to any of its
+    /// workspace members. For example, the requirements in a PEP 723 script would be included here.
     #[serde(default)]
     requirements: BTreeSet<Requirement>,
+    /// The dependency groups provided to the resolver, exclusive of the workspace members.
+    ///
+    /// These are dependency groups that are attached to the project, but not to any of its
+    /// workspace members. For example, the dependency groups in a `pyproject.toml` without a
+    /// `[project]` table would be included here.
+    #[serde(default)]
+    dependency_groups: BTreeMap<GroupName, BTreeSet<Requirement>>,
     /// The constraints provided to the resolver.
     #[serde(default)]
     constraints: BTreeSet<Requirement>,
@@ -1356,6 +1449,7 @@ impl ResolverManifest {
         requirements: impl IntoIterator<Item = Requirement>,
         constraints: impl IntoIterator<Item = Requirement>,
         overrides: impl IntoIterator<Item = Requirement>,
+        dependency_groups: impl IntoIterator<Item = (GroupName, Vec<Requirement>)>,
         dependency_metadata: impl IntoIterator<Item = StaticMetadata>,
     ) -> Self {
         Self {
@@ -1363,29 +1457,46 @@ impl ResolverManifest {
             requirements: requirements.into_iter().collect(),
             constraints: constraints.into_iter().collect(),
             overrides: overrides.into_iter().collect(),
+            dependency_groups: dependency_groups
+                .into_iter()
+                .map(|(group, requirements)| (group, requirements.into_iter().collect()))
+                .collect(),
             dependency_metadata: dependency_metadata.into_iter().collect(),
         }
     }
 
     /// Convert the manifest to a relative form using the given workspace.
-    pub fn relative_to(self, workspace: &Workspace) -> Result<Self, io::Error> {
+    pub fn relative_to(self, root: &Path) -> Result<Self, io::Error> {
         Ok(Self {
             members: self.members,
             requirements: self
                 .requirements
                 .into_iter()
-                .map(|requirement| requirement.relative_to(workspace.install_path()))
+                .map(|requirement| requirement.relative_to(root))
                 .collect::<Result<BTreeSet<_>, _>>()?,
             constraints: self
                 .constraints
                 .into_iter()
-                .map(|requirement| requirement.relative_to(workspace.install_path()))
+                .map(|requirement| requirement.relative_to(root))
                 .collect::<Result<BTreeSet<_>, _>>()?,
             overrides: self
                 .overrides
                 .into_iter()
-                .map(|requirement| requirement.relative_to(workspace.install_path()))
+                .map(|requirement| requirement.relative_to(root))
                 .collect::<Result<BTreeSet<_>, _>>()?,
+            dependency_groups: self
+                .dependency_groups
+                .into_iter()
+                .map(|(group, requirements)| {
+                    Ok::<_, io::Error>((
+                        group,
+                        requirements
+                            .into_iter()
+                            .map(|requirement| requirement.relative_to(root))
+                            .collect::<Result<BTreeSet<_>, _>>()?,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?,
             dependency_metadata: self.dependency_metadata,
         })
     }
@@ -3567,7 +3678,7 @@ struct Dependency {
     /// by assuming `requires-python` is satisfied. So if
     /// `requires-python = '>=3.8'`, then
     /// `python_version >= '3.8' and python_version < '3.12'`
-    /// gets simplfiied to `python_version < '3.12'`.
+    /// gets simplified to `python_version < '3.12'`.
     ///
     /// Generally speaking, this marker should not be exposed to
     /// anything outside this module unless it's for a specialized use
@@ -3764,10 +3875,7 @@ fn normalize_url(mut url: Url) -> UrlString {
 /// 2. Ensures that the lock and install paths are appropriately framed with respect to the
 ///    current [`Workspace`].
 /// 3. Removes the `origin` field, which is only used in `requirements.txt`.
-fn normalize_requirement(
-    requirement: Requirement,
-    workspace: &Workspace,
-) -> Result<Requirement, LockError> {
+fn normalize_requirement(requirement: Requirement, root: &Path) -> Result<Requirement, LockError> {
     match requirement.source {
         RequirementSource::Git {
             mut repository,
@@ -3809,8 +3917,7 @@ fn normalize_requirement(
             ext,
             url: _,
         } => {
-            let install_path =
-                uv_fs::normalize_path_buf(workspace.install_path().join(&install_path));
+            let install_path = uv_fs::normalize_path_buf(root.join(&install_path));
             let url = VerbatimUrl::from_absolute_path(&install_path)
                 .map_err(LockErrorKind::RequirementVerbatimUrl)?;
 
@@ -3833,8 +3940,7 @@ fn normalize_requirement(
             r#virtual,
             url: _,
         } => {
-            let install_path =
-                uv_fs::normalize_path_buf(workspace.install_path().join(&install_path));
+            let install_path = uv_fs::normalize_path_buf(root.join(&install_path));
             let url = VerbatimUrl::from_absolute_path(&install_path)
                 .map_err(LockErrorKind::RequirementVerbatimUrl)?;
 
@@ -4220,11 +4326,6 @@ enum LockErrorKind {
         /// The inner error we forward.
         #[source]
         err: uv_distribution::Error,
-    },
-    #[error("Failed to resolve `dependency-groups`")]
-    DependencyGroup {
-        #[source]
-        err: DependencyGroupError,
     },
 }
 

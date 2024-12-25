@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
@@ -53,7 +54,9 @@ pub(crate) mod add;
 pub(crate) mod environment;
 pub(crate) mod export;
 pub(crate) mod init;
+mod install_target;
 pub(crate) mod lock;
+mod lock_target;
 pub(crate) mod remove;
 pub(crate) mod run;
 pub(crate) mod sync;
@@ -1257,7 +1260,7 @@ pub(crate) async fn resolve_environment<'a>(
         overrides,
         source_trees,
         project,
-        None,
+        BTreeSet::default(),
         &extras,
         preferences,
         EmptyInstalledPackages,
@@ -1602,7 +1605,7 @@ pub(crate) async fn update_environment(
         overrides,
         source_trees,
         project,
-        None,
+        BTreeSet::default(),
         &extras,
         preferences,
         site_packages.clone(),
