@@ -218,8 +218,8 @@ fn invalid_pyproject_toml_option_unknown_field() -> Result<()> {
 
     let mut filters = context.filters();
     filters.push((
-        "expected one of `native-tls`, `offline`, .*",
-        "expected one of `native-tls`, `offline`, [...]",
+        "expected one of `required-version`, `native-tls`, .*",
+        "expected one of `required-version`, `native-tls`, [...]",
     ));
 
     uv_snapshot!(filters, context.pip_install()
@@ -235,7 +235,7 @@ fn invalid_pyproject_toml_option_unknown_field() -> Result<()> {
         |
       2 | unknown = "field"
         | ^^^^^^^
-      unknown field `unknown`, expected one of `native-tls`, `offline`, [...]
+      unknown field `unknown`, expected one of `required-version`, `native-tls`, [...]
 
     Resolved in [TIME]
     Audited in [TIME]
@@ -3820,6 +3820,75 @@ fn invalidate_path_on_commit() -> Result<()> {
     Uninstalled 1 package in [TIME]
     Installed 1 package in [TIME]
      ~ example==0.0.0 (from file://[TEMP_DIR]/editable)
+    "###
+    );
+
+    Ok(())
+}
+
+#[test]
+fn invalidate_path_on_env_var() -> Result<()> {
+    let context = TestContext::new("3.12");
+
+    // Create a local package.
+    context.temp_dir.child("pyproject.toml").write_str(
+        r#"[project]
+        name = "example"
+        version = "0.0.0"
+        dependencies = ["anyio==4.0.0"]
+        requires-python = ">=3.8"
+
+        [tool.uv]
+        cache-keys = [{ env = "FOO" }]
+"#,
+    )?;
+
+    // Install the package.
+    uv_snapshot!(context.filters(), context.pip_install()
+        .arg(".")
+        .env_remove("FOO"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 4 packages in [TIME]
+    Prepared 4 packages in [TIME]
+    Installed 4 packages in [TIME]
+     + anyio==4.0.0
+     + example==0.0.0 (from file://[TEMP_DIR]/)
+     + idna==3.6
+     + sniffio==1.3.1
+    "###
+    );
+
+    // Installing again should be a no-op.
+    uv_snapshot!(context.filters(), context.pip_install()
+        .arg(".")
+        .env_remove("FOO"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Audited 1 package in [TIME]
+    "###
+    );
+
+    // Installing again should update the package.
+    uv_snapshot!(context.filters(), context.pip_install()
+        .arg(".")
+        .env("FOO", "BAR"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 4 packages in [TIME]
+    Prepared 1 package in [TIME]
+    Uninstalled 1 package in [TIME]
+    Installed 1 package in [TIME]
+     ~ example==0.0.0 (from file://[TEMP_DIR]/)
     "###
     );
 
@@ -7654,4 +7723,190 @@ fn missing_subdirectory_url() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[test]
+fn static_metadata_pyproject_toml() -> Result<()> {
+    let context = TestContext::new("3.12");
+
+    context.temp_dir.child("pyproject.toml").write_str(
+        r#"
+        [project]
+        name = "example"
+        version = "0.0.0"
+        dependencies = [
+          "anyio==3.7.0"
+        ]
+
+        [[tool.uv.dependency-metadata]]
+        name = "anyio"
+        version = "3.7.0"
+        requires-dist = ["typing-extensions"]
+        "#,
+    )?;
+
+    uv_snapshot!(context.filters(), context.pip_install()
+        .arg("-r")
+        .arg("pyproject.toml"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 2 packages in [TIME]
+    Prepared 2 packages in [TIME]
+    Installed 2 packages in [TIME]
+     + anyio==3.7.0
+     + typing-extensions==4.10.0
+    "###
+    );
+
+    Ok(())
+}
+
+#[test]
+fn static_metadata_source_tree() -> Result<()> {
+    let context = TestContext::new("3.12");
+
+    context.temp_dir.child("pyproject.toml").write_str(
+        r#"
+        [project]
+        name = "example"
+        version = "0.0.0"
+        dependencies = [
+          "anyio==3.7.0"
+        ]
+
+        [[tool.uv.dependency-metadata]]
+        name = "anyio"
+        version = "3.7.0"
+        requires-dist = ["typing-extensions"]
+        "#,
+    )?;
+
+    uv_snapshot!(context.filters(), context.pip_install()
+        .arg("-e")
+        .arg("."), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 3 packages in [TIME]
+    Prepared 3 packages in [TIME]
+    Installed 3 packages in [TIME]
+     + anyio==3.7.0
+     + example==0.0.0 (from file://[TEMP_DIR]/)
+     + typing-extensions==4.10.0
+    "###
+    );
+
+    Ok(())
+}
+
+/// Regression test for: <https://github.com/astral-sh/uv/issues/10239#issuecomment-2565663046>
+#[test]
+fn static_metadata_already_installed() -> Result<()> {
+    let context = TestContext::new("3.12");
+
+    context.temp_dir.child("pyproject.toml").write_str(
+        r#"
+        [project]
+        name = "example"
+        version = "0.0.0"
+        dependencies = [
+          "anyio==3.7.0"
+        ]
+
+        [[tool.uv.dependency-metadata]]
+        name = "anyio"
+        version = "3.7.0"
+        requires-dist = ["typing-extensions"]
+        "#,
+    )?;
+
+    uv_snapshot!(context.filters(), context.pip_install()
+        .arg("-r")
+        .arg("pyproject.toml"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 2 packages in [TIME]
+    Prepared 2 packages in [TIME]
+    Installed 2 packages in [TIME]
+     + anyio==3.7.0
+     + typing-extensions==4.10.0
+    "###
+    );
+
+    uv_snapshot!(context.filters(), context.pip_install()
+        .arg("-e")
+        .arg("."), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 3 packages in [TIME]
+    Prepared 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + example==0.0.0 (from file://[TEMP_DIR]/)
+    "###
+    );
+
+    Ok(())
+}
+
+/// `circular-one` depends on `circular-two` as a build dependency, but `circular-two` depends on
+/// `circular-one` was a runtime dependency.
+#[test]
+fn cyclic_build_dependency() {
+    static EXCLUDE_NEWER: &str = "2025-01-02T00:00:00Z";
+
+    let context = TestContext::new("3.13");
+
+    // Installing with `--no-binary circular-one` should fail, since we'll end up in a recursive
+    // build.
+    uv_snapshot!(context.filters(), context.pip_install()
+        .env(EnvVars::UV_EXCLUDE_NEWER, EXCLUDE_NEWER)
+        .arg("circular-one")
+        .arg("--extra-index-url")
+        .arg("https://test.pypi.org/simple")
+        .arg("--index-strategy")
+        .arg("unsafe-best-match")
+        .arg("--no-binary")
+        .arg("circular-one"), @r###"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 1 package in [TIME]
+      × Failed to download and build `circular-one==0.2.0`
+      ├─▶ Failed to install requirements from `build-system.requires`
+      ╰─▶ Cyclic build dependency detected for `circular-one`
+    "###
+    );
+
+    // Installing without `--no-binary circular-one` should succeed, since we can use the wheel.
+    uv_snapshot!(context.filters(), context.pip_install()
+        .env(EnvVars::UV_EXCLUDE_NEWER, EXCLUDE_NEWER)
+        .arg("circular-one")
+        .arg("--extra-index-url")
+        .arg("https://test.pypi.org/simple")
+        .arg("--index-strategy")
+        .arg("unsafe-best-match"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 1 package in [TIME]
+    Prepared 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + circular-one==0.2.0
+    "###
+    );
 }

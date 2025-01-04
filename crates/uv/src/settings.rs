@@ -23,8 +23,8 @@ use uv_client::Connectivity;
 use uv_configuration::{
     BuildOptions, Concurrency, ConfigSettings, DevGroupsSpecification, EditableMode, ExportFormat,
     ExtrasSpecification, HashCheckingMode, IndexStrategy, InstallOptions, KeyringProviderType,
-    NoBinary, NoBuild, PreviewMode, ProjectBuildBackend, Reinstall, SourceStrategy, TargetTriple,
-    TrustedHost, TrustedPublishing, Upgrade, VersionControlSystem,
+    NoBinary, NoBuild, PreviewMode, ProjectBuildBackend, Reinstall, RequiredVersion,
+    SourceStrategy, TargetTriple, TrustedHost, TrustedPublishing, Upgrade, VersionControlSystem,
 };
 use uv_distribution_types::{DependencyMetadata, Index, IndexLocations, IndexUrl};
 use uv_install_wheel::linker::LinkMode;
@@ -53,6 +53,7 @@ const PYPI_PUBLISH_URL: &str = "https://upload.pypi.org/legacy/";
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub(crate) struct GlobalSettings {
+    pub(crate) required_version: Option<RequiredVersion>,
     pub(crate) quiet: bool,
     pub(crate) verbose: u8,
     pub(crate) color: ColorChoice,
@@ -72,6 +73,8 @@ impl GlobalSettings {
     /// Resolve the [`GlobalSettings`] from the CLI and filesystem configuration.
     pub(crate) fn resolve(args: &GlobalArgs, workspace: Option<&FilesystemOptions>) -> Self {
         Self {
+            required_version: workspace
+                .and_then(|workspace| workspace.globals.required_version.clone()),
             quiet: args.quiet,
             verbose: args.verbose,
             color: if let Some(color_choice) = args.color {
@@ -189,6 +192,7 @@ pub(crate) struct InitSettings {
     pub(crate) name: Option<PackageName>,
     pub(crate) package: bool,
     pub(crate) kind: InitKind,
+    pub(crate) description: Option<String>,
     pub(crate) vcs: Option<VersionControlSystem>,
     pub(crate) build_backend: Option<ProjectBuildBackend>,
     pub(crate) no_readme: bool,
@@ -212,6 +216,7 @@ impl InitSettings {
             app,
             lib,
             script,
+            description,
             vcs,
             build_backend,
             no_readme,
@@ -241,6 +246,7 @@ impl InitSettings {
             name,
             package,
             kind,
+            description,
             vcs,
             build_backend,
             no_readme,
@@ -262,6 +268,7 @@ pub(crate) struct RunSettings {
     pub(crate) extras: ExtrasSpecification,
     pub(crate) dev: DevGroupsSpecification,
     pub(crate) editable: EditableMode,
+    pub(crate) modifications: Modifications,
     pub(crate) with: Vec<String>,
     pub(crate) with_editable: Vec<String>,
     pub(crate) with_requirements: Vec<PathBuf>,
@@ -297,6 +304,8 @@ impl RunSettings {
             module: _,
             only_dev,
             no_editable,
+            inexact,
+            exact,
             script: _,
             gui_script: _,
             command: _,
@@ -336,6 +345,11 @@ impl RunSettings {
                 dev, no_dev, only_dev, group, no_group, only_group, all_groups,
             ),
             editable: EditableMode::from_args(no_editable),
+            modifications: if flag(exact, inexact).unwrap_or(false) {
+                Modifications::Exact
+            } else {
+                Modifications::Sufficient
+            },
             with: with
                 .into_iter()
                 .flat_map(CommaSeparatedRequirements::into_iter)
@@ -790,7 +804,7 @@ impl PythonInstallSettings {
     /// Resolve the [`PythonInstallSettings`] from the CLI and filesystem configuration.
     #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn resolve(args: PythonInstallArgs, filesystem: Option<FilesystemOptions>) -> Self {
-        let options = filesystem.map(uv_settings::FilesystemOptions::into_options);
+        let options = filesystem.map(FilesystemOptions::into_options);
         let (python_mirror, pypy_mirror) = match options {
             Some(options) => (
                 options.install_mirrors.python_install_mirror,
@@ -1981,8 +1995,8 @@ pub(crate) struct PipTreeSettings {
     pub(crate) package: Vec<PackageName>,
     pub(crate) no_dedupe: bool,
     pub(crate) invert: bool,
-    // CLI-only settings.
-    pub(crate) shared: PipSettings,
+    pub(crate) outdated: bool,
+    pub(crate) settings: PipSettings,
 }
 
 impl PipTreeSettings {
@@ -1993,6 +2007,7 @@ impl PipTreeSettings {
             tree,
             strict,
             no_strict,
+            fetch,
             python,
             system,
             no_system,
@@ -2006,13 +2021,13 @@ impl PipTreeSettings {
             no_dedupe: tree.no_dedupe,
             invert: tree.invert,
             package: tree.package,
-            // Shared settings.
-            shared: PipSettings::combine(
+            outdated: tree.outdated,
+            settings: PipSettings::combine(
                 PipOptions {
                     python: python.and_then(Maybe::into_option),
                     system: flag(system, no_system),
                     strict: flag(strict, no_strict),
-                    ..PipOptions::default()
+                    ..PipOptions::from(fetch)
                 },
                 filesystem,
             ),

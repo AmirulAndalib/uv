@@ -31,7 +31,7 @@ use uv_python::{
     PythonPreference, PythonRequest, PythonVersionFile, VersionFileDiscoveryOptions,
 };
 use uv_requirements::{RequirementsSource, RequirementsSpecification};
-use uv_resolver::{InstallTarget, Lock};
+use uv_resolver::Lock;
 use uv_scripts::Pep723Item;
 use uv_settings::PythonInstallMirrors;
 use uv_static::EnvVars;
@@ -43,7 +43,9 @@ use crate::commands::pip::loggers::{
 };
 use crate::commands::pip::operations::Modifications;
 use crate::commands::project::environment::CachedEnvironment;
+use crate::commands::project::install_target::InstallTarget;
 use crate::commands::project::lock::LockMode;
+use crate::commands::project::lock_target::LockTarget;
 use crate::commands::project::{
     default_dependency_groups, validate_project_requires_python, DependencyGroupsTarget,
     EnvironmentSpecification, ProjectError, ScriptInterpreter, WorkspacePython,
@@ -72,6 +74,7 @@ pub(crate) async fn run(
     extras: ExtrasSpecification,
     dev: DevGroupsSpecification,
     editable: EditableMode,
+    modifications: Modifications,
     python: Option<String>,
     install_mirrors: PythonInstallMirrors,
     settings: ResolverInstallerSettings,
@@ -183,7 +186,7 @@ pub(crate) async fn run(
 
         // Discover the interpreter for the script.
         let interpreter = ScriptInterpreter::discover(
-            &script,
+            (&script).into(),
             python.as_deref().map(PythonRequest::parse),
             python_preference,
             python_downloads,
@@ -582,7 +585,8 @@ pub(crate) async fn run(
                 // If we're not syncing, we should still attempt to respect the locked preferences
                 // in any `--with` requirements.
                 if !isolated && !requirements.is_empty() {
-                    lock = project::lock::read(project.workspace())
+                    lock = LockTarget::from(project.workspace())
+                        .read()
                         .await
                         .ok()
                         .flatten()
@@ -620,7 +624,7 @@ pub(crate) async fn run(
 
                 let result = match project::lock::do_safe_lock(
                     mode,
-                    project.workspace(),
+                    project.workspace().into(),
                     settings.as_ref().into(),
                     LowerBound::Allow,
                     &state,
@@ -702,7 +706,7 @@ pub(crate) async fn run(
                     &dev.with_defaults(defaults),
                     editable,
                     install_options,
-                    Modifications::Sufficient,
+                    modifications,
                     settings.as_ref().into(),
                     if show_resolution {
                         Box::new(DefaultInstallLogger)

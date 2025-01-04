@@ -433,6 +433,11 @@ Cache keys can also include version control information. For example, if a proje
 to include the current Git commit hash in the cache key (in addition to the
 `pyproject.toml`). Git tags are also supported via `cache-keys = [{ git = { commit = true, tags = true } }]`.
 
+Cache keys can also include environment variables. For example, if a project relies on
+`MACOSX_DEPLOYMENT_TARGET` or other environment variables to determine its behavior, you can
+specify `cache-keys = [{ env = "MACOSX_DEPLOYMENT_TARGET" }]` to invalidate the cache
+whenever the environment variable changes.
+
 Cache keys only affect the project defined by the `pyproject.toml` in which they're
 specified (as opposed to, e.g., affecting all members in a workspace), and all paths and
 globs are interpreted as relative to the project directory.
@@ -1513,6 +1518,35 @@ Reinstall a specific package, regardless of whether it's already installed. Impl
 
     ```toml
     reinstall-package = ["ruff"]
+    ```
+
+---
+
+### [`required-version`](#required-version) {: #required-version }
+
+Enforce a requirement on the version of uv.
+
+If the version of uv does not meet the requirement at runtime, uv will exit
+with an error.
+
+Accepts a [PEP 440](https://peps.python.org/pep-0440/) specifier, like `==0.5.0` or `>=0.5.0`.
+
+**Default value**: `null`
+
+**Type**: `str`
+
+**Example usage**:
+
+=== "pyproject.toml"
+
+    ```toml
+    [tool.uv]
+    required-version = ">=0.5.0"
+    ```
+=== "uv.toml"
+
+    ```toml
+    required-version = ">=0.5.0"
     ```
 
 ---

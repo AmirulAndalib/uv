@@ -2112,6 +2112,9 @@ pub struct PipTreeArgs {
     #[arg(long, overrides_with("strict"), hide = true)]
     pub no_strict: bool,
 
+    #[command(flatten)]
+    pub fetch: FetchArgs,
+
     /// The Python interpreter for which packages should be listed.
     ///
     /// By default, uv lists packages in a virtual environment but will show
@@ -2565,8 +2568,12 @@ pub struct InitArgs {
     ///
     /// By default, adds a requirement on the system Python version; use `--python` to specify an
     /// alternative Python version requirement.
-    #[arg(long, conflicts_with_all=["app", "lib", "package", "build_backend"])]
+    #[arg(long, conflicts_with_all=["app", "lib", "package", "build_backend", "description"])]
     pub r#script: bool,
+
+    /// Set the project description.
+    #[arg(long, conflicts_with = "script")]
+    pub description: Option<String>,
 
     /// Initialize a version control system for the project.
     ///
@@ -2717,6 +2724,17 @@ pub struct RunArgs {
     /// non-editable.
     #[arg(long)]
     pub no_editable: bool,
+
+    /// Do not remove extraneous packages present in the environment.
+    #[arg(long, overrides_with("exact"), alias = "no-exact", hide = true)]
+    pub inexact: bool,
+
+    /// Perform an exact sync, removing extraneous packages.
+    ///
+    /// When enabled, uv will remove any extraneous packages from the environment.
+    /// By default, `uv run` will make the minimum necessary changes to satisfy the requirements.
+    #[arg(long, overrides_with("inexact"))]
+    pub exact: bool,
 
     /// Load environment variables from a `.env` file.
     ///

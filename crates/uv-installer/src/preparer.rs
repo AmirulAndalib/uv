@@ -220,6 +220,8 @@ pub enum Error {
         DerivationChain,
         #[source] uv_distribution::Error,
     ),
+    #[error("Cyclic build dependency detected for `{0}`")]
+    CyclicBuildDependency(PackageName),
     #[error("Unzip failed in another thread: {0}")]
     Thread(String),
 }
@@ -230,7 +232,7 @@ impl Error {
         let chain =
             DerivationChain::from_resolution(resolution, (&dist).into()).unwrap_or_default();
         Self::Dist(
-            DistErrorKind::from_dist_and_err(&dist, &err),
+            DistErrorKind::from_dist(&dist, &err),
             Box::new(dist),
             chain,
             err,

@@ -3,8 +3,8 @@ use std::{fmt::Debug, num::NonZeroUsize, path::PathBuf};
 use url::Url;
 use uv_cache_info::CacheKey;
 use uv_configuration::{
-    ConfigSettings, IndexStrategy, KeyringProviderType, PackageNameSpecifier, TargetTriple,
-    TrustedHost, TrustedPublishing,
+    ConfigSettings, IndexStrategy, KeyringProviderType, PackageNameSpecifier, RequiredVersion,
+    TargetTriple, TrustedHost, TrustedPublishing,
 };
 use uv_distribution_types::{
     Index, IndexUrl, PipExtraIndex, PipFindLinks, PipIndex, StaticMetadata,
@@ -79,6 +79,11 @@ pub struct Options {
     /// to include the current Git commit hash in the cache key (in addition to the
     /// `pyproject.toml`). Git tags are also supported via `cache-keys = [{ git = { commit = true, tags = true } }]`.
     ///
+    /// Cache keys can also include environment variables. For example, if a project relies on
+    /// `MACOSX_DEPLOYMENT_TARGET` or other environment variables to determine its behavior, you can
+    /// specify `cache-keys = [{ env = "MACOSX_DEPLOYMENT_TARGET" }]` to invalidate the cache
+    /// whenever the environment variable changes.
+    ///
     /// Cache keys only affect the project defined by the `pyproject.toml` in which they're
     /// specified (as opposed to, e.g., affecting all members in a workspace), and all paths and
     /// globs are interpreted as relative to the project directory.
@@ -144,6 +149,20 @@ impl Options {
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct GlobalOptions {
+    /// Enforce a requirement on the version of uv.
+    ///
+    /// If the version of uv does not meet the requirement at runtime, uv will exit
+    /// with an error.
+    ///
+    /// Accepts a [PEP 440](https://peps.python.org/pep-0440/) specifier, like `==0.5.0` or `>=0.5.0`.
+    #[option(
+        default = "null",
+        value_type = "str",
+        example = r#"
+            required-version = ">=0.5.0"
+        "#
+    )]
+    pub required_version: Option<RequiredVersion>,
     /// Whether to load TLS certificates from the platform's native certificate store.
     ///
     /// By default, uv loads certificates from the bundled `webpki-roots` crate. The
@@ -1618,6 +1637,7 @@ impl From<ToolOptions> for ResolverInstallerOptions {
 pub struct OptionsWire {
     // #[serde(flatten)]
     // globals: GlobalOptions
+    required_version: Option<RequiredVersion>,
     native_tls: Option<bool>,
     offline: Option<bool>,
     no_cache: Option<bool>,
@@ -1699,6 +1719,7 @@ pub struct OptionsWire {
 impl From<OptionsWire> for Options {
     fn from(value: OptionsWire) -> Self {
         let OptionsWire {
+            required_version,
             native_tls,
             offline,
             no_cache,
@@ -1759,6 +1780,7 @@ impl From<OptionsWire> for Options {
 
         Self {
             globals: GlobalOptions {
+                required_version,
                 native_tls,
                 offline,
                 no_cache,

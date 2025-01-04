@@ -4,6 +4,7 @@ use std::fmt::Write;
 use std::io::stdout;
 use std::path::Path;
 use std::process::ExitCode;
+use std::str::FromStr;
 use std::sync::atomic::Ordering;
 
 use anstream::eprintln;
@@ -207,6 +208,16 @@ async fn run(mut cli: Cli) -> Result<ExitStatus> {
 
     // Resolve the cache settings.
     let cache_settings = CacheSettings::resolve(*cli.top_level.cache_args, filesystem.as_ref());
+
+    // Enforce the required version.
+    if let Some(required_version) = globals.required_version.as_ref() {
+        let package_version = uv_pep440::Version::from_str(uv_version::version())?;
+        if !required_version.contains(&package_version) {
+            return Err(anyhow::anyhow!(
+                "Required version `{required_version}` does not match the running version `{package_version}`",
+            ));
+        }
+    }
 
     // Configure the `tracing` crate, which controls internal logging.
     #[cfg(feature = "tracing-durations-export")]
@@ -671,12 +682,23 @@ async fn run(mut cli: Cli) -> Result<ExitStatus> {
                 &args.package,
                 args.no_dedupe,
                 args.invert,
-                args.shared.strict,
-                args.shared.python.as_deref(),
-                args.shared.system,
+                args.outdated,
+                args.settings.prerelease,
+                args.settings.index_locations,
+                args.settings.index_strategy,
+                args.settings.keyring_provider,
+                globals.allow_insecure_host,
+                globals.connectivity,
+                globals.concurrency,
+                args.settings.strict,
+                args.settings.exclude_newer,
+                args.settings.python.as_deref(),
+                args.settings.system,
+                globals.native_tls,
                 &cache,
                 printer,
             )
+            .await
         }
         Commands::Pip(PipNamespace {
             command: PipCommand::Check(args),
@@ -1349,6 +1371,7 @@ async fn run_project(
                 args.name,
                 args.package,
                 args.kind,
+                args.description,
                 args.vcs,
                 args.build_backend,
                 args.no_readme,
@@ -1414,6 +1437,7 @@ async fn run_project(
                 args.extras,
                 args.dev,
                 args.editable,
+                args.modifications,
                 args.python,
                 args.install_mirrors,
                 args.settings,
@@ -1692,7 +1716,7 @@ async fn run_project(
 /// uv binary interface is the official public API. When using this entry
 /// point, uv assumes it is running in a process it controls and that the
 /// entire process lifetime is managed by uv. Unexpected behavior may be
-/// encountered if this entry pointis called multiple times in a single process.
+/// encountered if this entry point is called multiple times in a single process.
 pub fn main<I, T>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = T>,

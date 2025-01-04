@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
@@ -34,7 +35,7 @@ use uv_resolver::{
     FlatIndex, Lock, OptionsBuilder, PythonRequirement, RequiresPython, ResolverEnvironment,
     ResolverOutput,
 };
-use uv_scripts::Pep723Item;
+use uv_scripts::Pep723ItemRef;
 use uv_settings::PythonInstallMirrors;
 use uv_types::{BuildIsolation, EmptyInstalledPackages, HashStrategy};
 use uv_warnings::{warn_user, warn_user_once};
@@ -53,7 +54,9 @@ pub(crate) mod add;
 pub(crate) mod environment;
 pub(crate) mod export;
 pub(crate) mod init;
+mod install_target;
 pub(crate) mod lock;
+mod lock_target;
 pub(crate) mod remove;
 pub(crate) mod run;
 pub(crate) mod sync;
@@ -74,6 +77,9 @@ pub(crate) enum ProjectError {
 
     #[error("Failed to parse `uv.lock`, which uses an unsupported schema version (v{1}, but only v{0} is supported). Downgrade to a compatible uv version, or remove the `uv.lock` prior to running `uv lock` or `uv sync`.")]
     UnparsableLockVersion(u32, u32, #[source] toml::de::Error),
+
+    #[error("Failed to serialize `uv.lock`")]
+    LockSerialization(#[from] toml_edit::ser::Error),
 
     #[error("The current Python version ({0}) is not compatible with the locked Python requirement: `{1}`")]
     LockedPythonIncompatibility(Version, RequiresPython),
@@ -438,7 +444,7 @@ pub(crate) struct ScriptInterpreter(Interpreter);
 impl ScriptInterpreter {
     /// Discover the interpreter to use for the current [`Pep723Item`].
     pub(crate) async fn discover(
-        script: &Pep723Item,
+        script: Pep723ItemRef<'_>,
         python_request: Option<PythonRequest>,
         python_preference: PythonPreference,
         python_downloads: PythonDownloads,
@@ -789,7 +795,7 @@ impl ScriptPython {
     pub(crate) async fn from_request(
         python_request: Option<PythonRequest>,
         workspace: Option<&Workspace>,
-        script: &Pep723Item,
+        script: Pep723ItemRef<'_>,
         no_config: bool,
     ) -> Result<Self, ProjectError> {
         // First, discover a requirement from the workspace
@@ -1257,7 +1263,7 @@ pub(crate) async fn resolve_environment<'a>(
         overrides,
         source_trees,
         project,
-        None,
+        BTreeSet::default(),
         &extras,
         preferences,
         EmptyInstalledPackages,
@@ -1602,7 +1608,7 @@ pub(crate) async fn update_environment(
         overrides,
         source_trees,
         project,
-        None,
+        BTreeSet::default(),
         &extras,
         preferences,
         site_packages.clone(),

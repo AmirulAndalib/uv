@@ -21,7 +21,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, instrument, trace, warn, Level};
 
 use uv_configuration::{Constraints, Overrides};
-use uv_distribution::{ArchiveMetadata, DistributionDatabase};
+use uv_distribution::DistributionDatabase;
 use uv_distribution_types::{
     BuiltDist, CompatibleDist, DerivationChain, Dist, DistErrorKind, DistributionMetadata,
     IncompatibleDist, IncompatibleSource, IncompatibleWheel, IndexCapabilities, IndexLocations,
@@ -31,11 +31,9 @@ use uv_distribution_types::{
 use uv_git::GitResolver;
 use uv_normalize::{ExtraName, GroupName, PackageName};
 use uv_pep440::{release_specifiers_to_ranges, Version, VersionSpecifiers, MIN_VERSION};
-use uv_pep508::MarkerTree;
+use uv_pep508::{MarkerExpression, MarkerOperator, MarkerTree, MarkerValueString};
 use uv_platform_tags::Tags;
-use uv_pypi_types::{
-    ConflictItem, ConflictItemRef, Conflicts, Requirement, ResolutionMetadata, VerbatimParsedUrl,
-};
+use uv_pypi_types::{ConflictItem, ConflictItemRef, Conflicts, Requirement, VerbatimParsedUrl};
 use uv_types::{BuildContext, HashStrategy, InstalledPackagesProvider};
 use uv_warnings::warn_user_once;
 
@@ -621,6 +619,7 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                             &self.indexes,
                             dependencies.clone(),
                             &self.git,
+                            &self.workspace_members,
                             self.selector.resolution_strategy(),
                         )?;
 
@@ -861,6 +860,7 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                     &self.indexes,
                     fork.dependencies.clone(),
                     &self.git,
+                    &self.workspace_members,
                     self.selector.resolution_strategy(),
                 )?;
                 // Emit a request to fetch the metadata for each registry package.
@@ -1095,11 +1095,11 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                     .insert(name.clone(), reason.into());
                 return Ok(None);
             }
+            // TODO(charlie): Add derivation chain for URL dependencies. In practice, this isn't
+            // critical since we fetch URL dependencies _prior_ to invoking the resolver.
             MetadataResponse::Error(dist, err) => {
-                // TODO(charlie): Add derivation chain for URL dependencies. In practice, this isn't
-                // critical since we fetch URL dependencies _prior_ to invoking the resolver.
                 return Err(ResolveError::Dist(
-                    DistErrorKind::from_dist_and_err(dist, &**err),
+                    DistErrorKind::from_requested_dist(dist, &**err),
                     dist.clone(),
                     DerivationChain::default(),
                     err.clone(),
@@ -1328,6 +1328,11 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
         pins: &mut FilePins,
         request_sink: &Sender<Request>,
     ) -> Result<Option<ResolverVersion>, ResolveError> {
+        // This only applies to universal resolutions.
+        if env.marker_environment().is_some() {
+            return Ok(None);
+        }
+
         // For now, we only apply this to local versions.
         if !candidate.version().is_local() {
             return Ok(None);
@@ -1367,7 +1372,7 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
         };
 
         // ...and the non-local version has greater platform support...
-        let remainder = {
+        let mut remainder = {
             let mut remainder = base_dist.implied_markers();
             remainder.and(dist.implied_markers().negate());
             remainder
@@ -1408,6 +1413,27 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
             return Ok(Some(ResolverVersion::Unforked(
                 base_candidate.version().clone(),
             )));
+        }
+
+        // If the implied markers includes _some_ macOS environments, but the remainder doesn't,
+        // then we can extend the implied markers to include _all_ macOS environments. Same goes for
+        // Linux and Windows.
+        //
+        // The idea here is that the base version could support (e.g.) ARM macOS, but not Intel
+        // macOS. But if _neither_ version supports Intel macOS, we'd rather use `sys_platform == 'darwin'`
+        // instead of `sys_platform == 'darwin' and platform_machine == 'arm64'`, since it's much
+        // simpler, and _neither_ version will succeed with Intel macOS anyway.
+        for sys_platform in &["darwin", "linux", "win32"] {
+            let sys_platform = MarkerTree::expression(MarkerExpression::String {
+                key: MarkerValueString::SysPlatform,
+                operator: MarkerOperator::Equal,
+                value: (*sys_platform).to_string(),
+            });
+            if dist.implied_markers().is_disjoint(sys_platform)
+                && !remainder.is_disjoint(sys_platform)
+            {
+                remainder.or(sys_platform);
+            }
         }
 
         // Otherwise, we need to fork.
@@ -1640,7 +1666,7 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                         let chain = DerivationChainBuilder::from_state(id, version, pubgrub)
                             .unwrap_or_default();
                         return Err(ResolveError::Dist(
-                            DistErrorKind::from_dist_and_err(dist, &**err),
+                            DistErrorKind::from_requested_dist(dist, &**err),
                             dist.clone(),
                             chain,
                             err.clone(),
@@ -1908,7 +1934,7 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                         }
                         if !requirement.evaluate_markers(
                             env.marker_environment(),
-                            std::slice::from_ref(source_extra),
+                            slice::from_ref(source_extra),
                         ) {
                             return None;
                         }
@@ -2016,7 +2042,7 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                                 Some(source_extra) => {
                                     if !constraint.evaluate_markers(
                                         env.marker_environment(),
-                                        std::slice::from_ref(source_extra),
+                                        slice::from_ref(source_extra),
                                     ) {
                                         return None;
                                     }
@@ -2066,12 +2092,9 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                 }
                 Some(Response::Installed { dist, metadata }) => {
                     trace!("Received installed distribution metadata for: {dist}");
-                    self.index.distributions().done(
-                        dist.version_id(),
-                        Arc::new(MetadataResponse::Found(ArchiveMetadata::from_metadata23(
-                            metadata,
-                        ))),
-                    );
+                    self.index
+                        .distributions()
+                        .done(dist.version_id(), Arc::new(metadata));
                 }
                 Some(Response::Dist { dist, metadata }) => {
                     let dist_kind = match dist {
@@ -2132,10 +2155,8 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
             }
 
             Request::Installed(dist) => {
-                // TODO(charlie): This should be return a `MetadataResponse`.
-                let metadata = dist
-                    .metadata()
-                    .map_err(|err| ResolveError::ReadInstalled(Box::new(dist.clone()), err))?;
+                let metadata = provider.get_installed_metadata(&dist).boxed_local().await?;
+
                 Ok(Some(Response::Installed { dist, metadata }))
             }
 
@@ -2249,9 +2270,9 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                             Response::Dist { dist, metadata }
                         }
                         ResolvedDist::Installed { dist } => {
-                            let metadata = dist.metadata().map_err(|err| {
-                                ResolveError::ReadInstalled(Box::new(dist.clone()), err)
-                            })?;
+                            let metadata =
+                                provider.get_installed_metadata(&dist).boxed_local().await?;
+
                             Response::Installed { dist, metadata }
                         }
                     };
@@ -2498,6 +2519,7 @@ impl ForkState {
         indexes: &Indexes,
         dependencies: Vec<PubGrubDependency>,
         git: &GitResolver,
+        workspace_members: &BTreeSet<PackageName>,
         resolution_strategy: &ResolutionStrategy,
     ) -> Result<(), ResolveError> {
         for dependency in &dependencies {
@@ -2524,12 +2546,15 @@ impl ForkState {
                 }
             }
 
-            if let Some(name) = self.pubgrub.package_store[for_package].name_no_root() {
+            if let Some(name) = self.pubgrub.package_store[for_package]
+                .name_no_root()
+                .filter(|name| !workspace_members.contains(name))
+            {
                 debug!(
                     "Adding transitive dependency for {name}=={for_version}: {package}{version}"
                 );
             } else {
-                // A dependency from the root package or requirements.txt.
+                // A dependency from the root package or `requirements.txt`.
                 debug!("Adding direct dependency: {package}{version}");
 
                 // Warn the user if a direct dependency lacks a lower bound in `--lowest` resolution.
@@ -3073,7 +3098,7 @@ enum Response {
     /// The returned metadata for an already-installed distribution.
     Installed {
         dist: InstalledDist,
-        metadata: ResolutionMetadata,
+        metadata: MetadataResponse,
     },
 }
 

@@ -21,13 +21,14 @@ use uv_client::{
 };
 use uv_distribution_filename::WheelFilename;
 use uv_distribution_types::{
-    BuildableSource, BuiltDist, Dist, FileLocation, HashPolicy, Hashed, Name, SourceDist,
+    BuildableSource, BuiltDist, Dist, FileLocation, HashPolicy, Hashed, InstalledDist, Name,
+    SourceDist,
 };
 use uv_extract::hash::Hasher;
 use uv_fs::write_atomic;
 use uv_platform_tags::Tags;
 use uv_pypi_types::HashDigest;
-use uv_types::BuildContext;
+use uv_types::{BuildContext, BuildStack};
 
 use crate::archive::Archive;
 use crate::locks::Locks;
@@ -70,7 +71,16 @@ impl<'a, Context: BuildContext> DistributionDatabase<'a, Context> {
         }
     }
 
-    /// Set the [`Reporter`] to use for this source distribution fetcher.
+    /// Set the build stack to use for the [`DistributionDatabase`].
+    #[must_use]
+    pub fn with_build_stack(self, build_stack: &'a BuildStack) -> Self {
+        Self {
+            builder: self.builder.with_build_stack(build_stack),
+            ..self
+        }
+    }
+
+    /// Set the [`Reporter`] to use for the [`DistributionDatabase`].
     #[must_use]
     pub fn with_reporter(self, reporter: impl Reporter + 'static) -> Self {
         let reporter = Arc::new(reporter);
@@ -121,6 +131,32 @@ impl<'a, Context: BuildContext> DistributionDatabase<'a, Context> {
     /// While hashes will be generated in some cases, hash-checking is only enforced for source
     /// distributions, and should be enforced by the caller for wheels.
     #[instrument(skip_all, fields(%dist))]
+    pub async fn get_installed_metadata(
+        &self,
+        dist: &InstalledDist,
+    ) -> Result<ArchiveMetadata, Error> {
+        // If the metadata was provided by the user directly, prefer it.
+        if let Some(metadata) = self
+            .build_context
+            .dependency_metadata()
+            .get(dist.name(), Some(dist.version()))
+        {
+            return Ok(ArchiveMetadata::from_metadata23(metadata.clone()));
+        }
+
+        let metadata = dist
+            .metadata()
+            .map_err(|err| Error::ReadInstalled(Box::new(dist.clone()), err))?;
+
+        Ok(ArchiveMetadata::from_metadata23(metadata))
+    }
+
+    /// Either fetch the only wheel metadata (directly from the index or with range requests) or
+    /// fetch and build the source distribution.
+    ///
+    /// While hashes will be generated in some cases, hash-checking is only enforced for source
+    /// distributions, and should be enforced by the caller for wheels.
+    #[instrument(skip_all, fields(%dist))]
     pub async fn get_or_build_wheel_metadata(
         &self,
         dist: &Dist,
@@ -151,7 +187,7 @@ impl<'a, Context: BuildContext> DistributionDatabase<'a, Context> {
                     FileLocation::RelativeUrl(base, url) => {
                         uv_pypi_types::base_url_join_relative(base, url)?
                     }
-                    FileLocation::AbsoluteUrl(url) => url.to_url(),
+                    FileLocation::AbsoluteUrl(url) => url.to_url()?,
                 };
 
                 // Create a cache entry for the wheel.
