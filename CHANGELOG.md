@@ -3,6 +3,72 @@
 <!-- prettier-ignore-start -->
 
 
+## 0.7.12
+
+### Enhancements
+
+- Add `uv python pin --rm` to remove `.python-version` pins ([#13860](https://github.com/astral-sh/uv/pull/13860))
+- Don't hint at versions removed by `excluded-newer` ([#13884](https://github.com/astral-sh/uv/pull/13884))
+- Add hint to use `tool.uv.environments` on resolution error ([#13455](https://github.com/astral-sh/uv/pull/13455))
+- Add hint to use `tool.uv.required-environments` on resolution error ([#13575](https://github.com/astral-sh/uv/pull/13575))
+
+- Improve `python pin` error messages ([#13862](https://github.com/astral-sh/uv/pull/13862))
+
+### Bug fixes
+
+- Lock environments during `uv sync`, `uv add` and `uv remove` to prevent race conditions ([#13869](https://github.com/astral-sh/uv/pull/13869))
+- Add `--no-editable` to `uv export` for `pylock.toml` ([#13852](https://github.com/astral-sh/uv/pull/13852))
+
+### Documentation
+
+- List `.gitignore` in project init files ([#13855](https://github.com/astral-sh/uv/pull/13855))
+- Move the pip interface documentation into the concepts section ([#13841](https://github.com/astral-sh/uv/pull/13841))
+- Remove the configuration section in favor of concepts / reference ([#13842](https://github.com/astral-sh/uv/pull/13842))
+- Update Git and GitHub Actions docs to mention `gh auth login` ([#13850](https://github.com/astral-sh/uv/pull/13850))
+
+### Preview
+
+- Fix directory glob traversal fallback preventing exclusion of all files ([#13882](https://github.com/astral-sh/uv/pull/13882))
+
+## 0.7.11
+
+### Python
+
+- Add Python 3.14.0b1
+- Add Python 3.13.4
+- Add Python 3.12.11
+- Add Python 3.11.13
+- Add Python 3.10.18
+- Add Python 3.9.23
+
+### Enhancements
+
+- Add Pyodide support ([#12731](https://github.com/astral-sh/uv/pull/12731))
+- Better error message for version specifier with missing operator ([#13803](https://github.com/astral-sh/uv/pull/13803))
+
+### Bug fixes
+
+- Downgrade `reqwest` and `hyper-util` to resolve connection reset errors over IPv6 ([#13835](https://github.com/astral-sh/uv/pull/13835))
+- Prefer `uv`'s binary's version when checking if it's up to date ([#13840](https://github.com/astral-sh/uv/pull/13840))
+
+### Documentation
+
+- Use "terminal driver" instead of "shell" in `SIGINT` docs ([#13787](https://github.com/astral-sh/uv/pull/13787))
+
+## 0.7.10
+
+### Enhancements
+
+- Add `--show-extras` to `uv tool list` ([#13783](https://github.com/astral-sh/uv/pull/13783))
+- Add dynamically generated sysconfig replacement mappings ([#13441](https://github.com/astral-sh/uv/pull/13441))
+- Add data locations to install wheel logs ([#13797](https://github.com/astral-sh/uv/pull/13797))
+
+### Bug fixes
+
+- Avoid redaction of placeholder `git` username when using SSH authentication ([#13799](https://github.com/astral-sh/uv/pull/13799))
+- Propagate credentials to files on devpi indexes ending in `/+simple` ([#13743](https://github.com/astral-sh/uv/pull/13743))
+- Restore retention of credentials for direct URLs in `uv export` ([#13809](https://github.com/astral-sh/uv/pull/13809))
+
 ## 0.7.9
 
 ### Python

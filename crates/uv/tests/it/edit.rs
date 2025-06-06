@@ -7956,7 +7956,7 @@ fn add_shadowed_name() -> Result<()> {
     "###);
 
     // Constraint with several available versions, check for an indirect dependency loop.
-    uv_snapshot!(context.filters(), context.add().arg("dagster-webserver>=1.6.11,<1.7.0"), @r###"
+    uv_snapshot!(context.filters(), context.add().arg("dagster-webserver>=1.6.11,<1.7.0"), @r"
     success: false
     exit_code: 1
     ----- stdout -----
@@ -7964,21 +7964,16 @@ fn add_shadowed_name() -> Result<()> {
     ----- stderr -----
       × No solution found when resolving dependencies:
       ╰─▶ Because only the following versions of dagster-webserver are available:
-              dagster-webserver<=1.6.13
-              dagster-webserver>1.7.0
-          and dagster-webserver==1.6.11 depends on your project, we can conclude that all of:
-              dagster-webserver>=1.6.11,<1.6.12
-              dagster-webserver>1.6.13,<1.7.0
-          depend on your project.
-          And because dagster-webserver==1.6.12 depends on your project, we can conclude that all of:
-              dagster-webserver>=1.6.11,<1.6.13
-              dagster-webserver>1.6.13,<1.7.0
-          depend on your project.
-          And because dagster-webserver==1.6.13 depends on your project and your project depends on dagster-webserver>=1.6.11,<1.7.0, we can conclude that your project's requirements are unsatisfiable.
+              dagster-webserver<=1.6.11
+              dagster-webserver==1.6.12
+              dagster-webserver==1.6.13
+          and dagster-webserver==1.6.11 depends on your project, we can conclude that dagster-webserver>=1.6.11,<1.6.12 depends on your project.
+          And because dagster-webserver==1.6.12 depends on your project, we can conclude that dagster-webserver>=1.6.11,<1.6.13 depends on your project.
+          And because dagster-webserver==1.6.13 depends on your project and your project depends on dagster-webserver>=1.6.11, we can conclude that your project's requirements are unsatisfiable.
 
           hint: The package `dagster-webserver` depends on the package `dagster` but the name is shadowed by your project. Consider changing the name of the project.
       help: If you want to add the package regardless of the failed resolution, provide the `--frozen` flag to skip locking and syncing.
-    "###);
+    ");
 
     Ok(())
 }
@@ -8073,7 +8068,7 @@ fn add_warn_index_url() -> Result<()> {
     ----- stderr -----
     warning: Indexes specified via `--extra-index-url` will not be persisted to the `pyproject.toml` file; use `--index` instead.
       × No solution found when resolving dependencies:
-      ╰─▶ Because only idna<3.6 is available and your project depends on idna>=3.6, we can conclude that your project's requirements are unsatisfiable.
+      ╰─▶ Because only idna==2.7 is available and your project depends on idna>=3.6, we can conclude that your project's requirements are unsatisfiable.
 
           hint: `idna` was found on https://test.pypi.org/simple, but not at the requested version (idna>=3.6). A compatible version may be available on a subsequent index (e.g., https://pypi.org/simple). By default, uv will only consider versions that are published on the first index that contains a given package, to avoid dependency confusion attacks. If all indexes are equally trusted, use `--index-strategy unsafe-best-match` to consider all versions from all indexes, regardless of the order in which they were defined.
       help: If you want to add the package regardless of the failed resolution, provide the `--frozen` flag to skip locking and syncing.
@@ -11404,6 +11399,41 @@ fn add_invalid_ignore_error_code() -> Result<()> {
     1234 is not a valid HTTP status code
     "
     );
+
+    Ok(())
+}
+
+/// uv should fail to parse `pyproject.toml` if `require-python`
+/// contains an invalid specifier and try to return a helpful hint.
+#[test]
+fn add_invalid_requires_python() -> Result<()> {
+    let context = TestContext::new("3.12");
+
+    let pyproject_toml = context.temp_dir.child("pyproject.toml");
+    pyproject_toml.write_str(indoc! { r#"
+        [project]
+        name = "foo"
+        version = "1.0.0"
+        requires-python = "3.12"
+        dependencies = []
+        "#
+    })?;
+
+    uv_snapshot!(context.add().arg("anyio"), @r#"
+    success: false
+    exit_code: 2
+    ----- stdout -----
+
+    ----- stderr -----
+    error: Failed to parse: `pyproject.toml`
+      Caused by: TOML parse error at line 4, column 19
+      |
+    4 | requires-python = "3.12"
+      |                   ^^^^^^
+    Failed to parse version: Unexpected end of version specifier, expected operator. Did you mean `==3.12`?:
+    3.12
+    ^^^^
+    "#);
 
     Ok(())
 }
