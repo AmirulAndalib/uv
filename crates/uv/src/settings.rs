@@ -313,7 +313,7 @@ pub(crate) struct RunSettings {
     pub(crate) locked: bool,
     pub(crate) frozen: bool,
     pub(crate) extras: ExtrasSpecification,
-    pub(crate) dev: DependencyGroups,
+    pub(crate) groups: DependencyGroups,
     pub(crate) editable: EditableMode,
     pub(crate) modifications: Modifications,
     pub(crate) with: Vec<String>,
@@ -404,7 +404,7 @@ impl RunSettings {
                 vec![],
                 flag(all_extras, no_all_extras).unwrap_or_default(),
             ),
-            dev: DependencyGroups::from_args(
+            groups: DependencyGroups::from_args(
                 dev,
                 no_dev,
                 only_dev,
@@ -782,6 +782,7 @@ pub(crate) struct ToolListSettings {
     pub(crate) show_paths: bool,
     pub(crate) show_version_specifiers: bool,
     pub(crate) show_with: bool,
+    pub(crate) show_extras: bool,
 }
 
 impl ToolListSettings {
@@ -792,6 +793,7 @@ impl ToolListSettings {
             show_paths,
             show_version_specifiers,
             show_with,
+            show_extras,
             python_preference: _,
             no_python_downloads: _,
         } = args;
@@ -800,6 +802,7 @@ impl ToolListSettings {
             show_paths,
             show_version_specifiers,
             show_with,
+            show_extras,
         }
     }
 }
@@ -1053,25 +1056,34 @@ pub(crate) struct PythonPinSettings {
     pub(crate) resolved: bool,
     pub(crate) no_project: bool,
     pub(crate) global: bool,
+    pub(crate) rm: bool,
+    pub(crate) install_mirrors: PythonInstallMirrors,
 }
 
 impl PythonPinSettings {
     /// Resolve the [`PythonPinSettings`] from the CLI and workspace configuration.
     #[allow(clippy::needless_pass_by_value)]
-    pub(crate) fn resolve(args: PythonPinArgs, _filesystem: Option<FilesystemOptions>) -> Self {
+    pub(crate) fn resolve(args: PythonPinArgs, filesystem: Option<FilesystemOptions>) -> Self {
         let PythonPinArgs {
             request,
             no_resolved,
             resolved,
             no_project,
             global,
+            rm,
         } = args;
+
+        let install_mirrors = filesystem
+            .map(|fs| fs.install_mirrors.clone())
+            .unwrap_or_default();
 
         Self {
             request,
             resolved: flag(resolved, no_resolved).unwrap_or(false),
             no_project,
             global,
+            rm,
+            install_mirrors,
         }
     }
 }
@@ -1086,7 +1098,7 @@ pub(crate) struct SyncSettings {
     pub(crate) script: Option<PathBuf>,
     pub(crate) active: Option<bool>,
     pub(crate) extras: ExtrasSpecification,
-    pub(crate) dev: DependencyGroups,
+    pub(crate) groups: DependencyGroups,
     pub(crate) editable: EditableMode,
     pub(crate) install_options: InstallOptions,
     pub(crate) modifications: Modifications,
@@ -1168,7 +1180,7 @@ impl SyncSettings {
                 vec![],
                 flag(all_extras, no_all_extras).unwrap_or_default(),
             ),
-            dev: DependencyGroups::from_args(
+            groups: DependencyGroups::from_args(
                 dev,
                 no_dev,
                 only_dev,
@@ -1566,7 +1578,7 @@ impl VersionSettings {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub(crate) struct TreeSettings {
-    pub(crate) dev: DependencyGroups,
+    pub(crate) groups: DependencyGroups,
     pub(crate) locked: bool,
     pub(crate) frozen: bool,
     pub(crate) universal: bool,
@@ -1614,7 +1626,7 @@ impl TreeSettings {
             .unwrap_or_default();
 
         Self {
-            dev: DependencyGroups::from_args(
+            groups: DependencyGroups::from_args(
                 dev,
                 no_dev,
                 only_dev,
@@ -1652,7 +1664,7 @@ pub(crate) struct ExportSettings {
     pub(crate) package: Option<PackageName>,
     pub(crate) prune: Vec<PackageName>,
     pub(crate) extras: ExtrasSpecification,
-    pub(crate) dev: DependencyGroups,
+    pub(crate) groups: DependencyGroups,
     pub(crate) editable: EditableMode,
     pub(crate) hashes: bool,
     pub(crate) install_options: InstallOptions,
@@ -1727,7 +1739,7 @@ impl ExportSettings {
                 vec![],
                 flag(all_extras, no_all_extras).unwrap_or_default(),
             ),
-            dev: DependencyGroups::from_args(
+            groups: DependencyGroups::from_args(
                 dev,
                 no_dev,
                 only_dev,
